@@ -1,0 +1,93 @@
+# Publishes Call Notes to TestFlight.
+#
+# The App Store Connect details come from the environment, never from this file,
+# because this repository is public. Set them before you run a lane:
+#
+#   export ASC_KEY_ID=...            # the key id of the .p8
+#   export ASC_ISSUER_ID=...         # the issuer uuid of the account
+#   export ASC_KEY_PATH=...          # the path to the .p8, which stays off git
+#
+#   fastlane mkapp                   # register the bundle id, create the app
+#   fastlane up ipa:../build/export/InterviewRecorder.ipa
+#   fastlane group                   # internal testers, no App Review
+#   fastlane state                   # what TestFlight holds now
+default_platform(:ios)
+
+KEY_ID    = ENV.fetch("ASC_KEY_ID")
+ISSUER_ID = ENV.fetch("ASC_ISSUER_ID")
+KEY_PATH  = ENV.fetch("ASC_KEY_PATH")
+BUNDLE    = ENV.fetch("ASC_BUNDLE", "com.dhl84.callnotes")
+TEAM      = ENV.fetch("ASC_TEAM", "5C49Q9G3ML")
+
+def key
+  app_store_connect_api_key(key_id: KEY_ID, issuer_id: ISSUER_ID, key_filepath: KEY_PATH, duration: 1200)
+end
+
+def connect!
+  require 'spaceship'
+  Spaceship::ConnectAPI.token = Spaceship::ConnectAPI::Token.create(
+    key_id: KEY_ID, issuer_id: ISSUER_ID, filepath: KEY_PATH)
+end
+
+# Registers the bundle id and creates the app record. The App Store keeps app
+# names unique across the whole store, so a taken name stops the lane with the
+# reason instead of a guess.
+lane :mkapp do |o|
+  connect!
+  name = o[:name] || "Call Notes"
+  if (existing = Spaceship::ConnectAPI::App.all.find { |a| a.bundle_id == BUNDLE })
+    UI.success("APP_EXISTS #{existing.name} [#{existing.id}]")
+    next
+  end
+  bundle = Spaceship::ConnectAPI::BundleId.all.find { |b| b.identifier == BUNDLE }
+  if bundle.nil?
+    bundle = Spaceship::ConnectAPI::BundleId.create(
+      name: "Call Notes", identifier: BUNDLE, platform: "IOS", seed_id: TEAM)
+    UI.success("BUNDLE_REGISTERED [#{bundle.id}]")
+  else
+    UI.message("BUNDLE_PRESENT [#{bundle.id}]")
+  end
+  app = Spaceship::ConnectAPI::App.create(
+    name: name, version_string: "1.0", sku: "callnotes", primary_locale: "en-GB",
+    bundle_id: BUNDLE, platforms: ["IOS"], company_name: "David Lee")
+  UI.success("APP_CREATED #{app.name} [#{app.id}]")
+end
+
+# Makes the App Store provisioning profile that the export step needs.
+lane :fixprofile do
+  sigh(api_key: key, app_identifier: BUNDLE, force: true, output_path: "/tmp")
+end
+
+lane :up do |o|
+  upload_to_testflight(api_key: key, ipa: o[:ipa],
+                       skip_waiting_for_build_processing: true, skip_submission: true)
+end
+
+# An internal group needs no App Review, so a build reaches the phone at once.
+lane :group do |o|
+  connect!
+  app = Spaceship::ConnectAPI::App.find(BUNDLE)
+  existing = app.get_beta_groups.find { |g| g.name == "Family" }
+  g = existing || app.create_beta_group(group_name: "Family", is_internal_group: true,
+                                        has_access_to_all_builds: true)
+  UI.message("GROUP #{g.name.inspect} internal=#{g.is_internal_group} existed=#{!existing.nil?}")
+  email = o[:email] or UI.user_error!("pass email:you@example.com")
+  tester = Spaceship::ConnectAPI::BetaTester.all(filter: { email: email }).first
+  UI.user_error!("#{email} is not a user on this account") unless tester
+  begin
+    g.add_beta_testers(beta_tester_ids: [tester.id])
+    UI.success("ADDED #{email}")
+  rescue => e
+    UI.message("add note: #{e.message[0, 120]}")
+  end
+end
+
+lane :state do
+  connect!
+  app = Spaceship::ConnectAPI::App.find(BUNDLE)
+  builds = Spaceship::ConnectAPI::Build.all(app_id: app.id, sort: "-uploadedDate", limit: 5)
+  UI.message("APP #{app.name} [#{app.id}] builds=#{builds.size}")
+  builds.each do |b|
+    UI.message("BUILD #{b.pre_release_version&.version}(#{b.version}) state=#{b.processing_state}")
+  end
+end

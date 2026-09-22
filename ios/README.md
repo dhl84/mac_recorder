@@ -57,7 +57,21 @@ Unlock the iPhone first. `devicectl` cannot install on a locked device.
 
 ## TestFlight
 
+The bundle id is `com.dhl84.callnotes` and the team is `5C49Q9G3ML`.
+
+`ios/fastlane/Fastfile` holds the lanes. It reads the App Store Connect account
+from the environment and never from the file, because this repository is public.
+
 ```bash
+export ASC_KEY_ID=...        # the key id of the .p8
+export ASC_ISSUER_ID=...     # the issuer uuid of the account
+export ASC_KEY_PATH=...      # the path to the .p8, which never enters git
+
+cd ios
+fastlane mkapp               # registers the bundle id, creates the app record
+fastlane fixprofile          # makes the App Store provisioning profile
+
+cd ..
 xcodebuild -project ios/InterviewRecorder.xcodeproj -scheme InterviewRecorder \
   -sdk iphoneos -configuration Release \
   -archivePath ios/build/CallNotes.xcarchive \
@@ -66,13 +80,18 @@ xcodebuild -project ios/InterviewRecorder.xcodeproj -scheme InterviewRecorder \
 xcodebuild -exportArchive -archivePath ios/build/CallNotes.xcarchive \
   -exportOptionsPlist ios/ExportOptions.plist -exportPath ios/build/export \
   -allowProvisioningUpdates \
-  -authenticationKeyPath <path to the .p8> \
-  -authenticationKeyID <key id> -authenticationKeyIssuerID <issuer uuid>
+  -authenticationKeyPath "$ASC_KEY_PATH" \
+  -authenticationKeyID "$ASC_KEY_ID" -authenticationKeyIssuerID "$ASC_ISSUER_ID"
+
+cd ios
+fastlane up ipa:build/export/InterviewRecorder.ipa
+fastlane group email:you@example.com
+fastlane state
 ```
 
-The export needs an App Store Connect account. Sign in under Xcode, Settings,
-Accounts, or give the three authentication arguments above. It also needs an app
-record with the identifier `com.davidlee.InterviewRecorder` in App Store Connect.
+`mkapp` stops if another app already holds the name "Call Notes", because the App
+Store keeps app names unique across the whole store. Pass `name:"Call Notes DL"`
+to use a different one.
 
 An internal TestFlight group needs no App Review, so a build reaches your own
 iPhone in minutes. An external group needs review, and a call recorder gets close
