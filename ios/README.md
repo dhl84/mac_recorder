@@ -55,6 +55,32 @@ xcrun devicectl device install app --device <your-device-id> \
 
 Unlock the iPhone first. `devicectl` cannot install on a locked device.
 
+## TestFlight
+
+```bash
+xcodebuild -project ios/InterviewRecorder.xcodeproj -scheme InterviewRecorder \
+  -sdk iphoneos -configuration Release \
+  -archivePath ios/build/CallNotes.xcarchive \
+  -destination 'generic/platform=iOS' -allowProvisioningUpdates archive
+
+xcodebuild -exportArchive -archivePath ios/build/CallNotes.xcarchive \
+  -exportOptionsPlist ios/ExportOptions.plist -exportPath ios/build/export \
+  -allowProvisioningUpdates \
+  -authenticationKeyPath <path to the .p8> \
+  -authenticationKeyID <key id> -authenticationKeyIssuerID <issuer uuid>
+```
+
+The export needs an App Store Connect account. Sign in under Xcode, Settings,
+Accounts, or give the three authentication arguments above. It also needs an app
+record with the identifier `com.davidlee.InterviewRecorder` in App Store Connect.
+
+An internal TestFlight group needs no App Review, so a build reaches your own
+iPhone in minutes. An external group needs review, and a call recorder gets close
+reading there.
+
+`ITSAppUsesNonExemptEncryption` is `NO` in the build settings, so TestFlight asks
+no export compliance question.
+
 ## Use
 
 1. Type the company and the role, or leave the field empty.
@@ -66,8 +92,9 @@ Unlock the iPhone first. `devicectl` cannot install on a locked device.
 The menu sorts the list by date, by name or by length. The search field filters
 by name. Swipe a row to delete it.
 
-The app keeps recording when the screen locks, because it declares the audio
-background mode. An incoming telephone call takes the microphone, and the app
+The app keeps recording when the screen locks, because `ios/Info.plist` declares
+the audio background mode. Xcode generates no build setting for that key, so the
+file exists only to carry it. An incoming telephone call takes the microphone, and the app
 then stops and keeps the part it has.
 
 ## Split calls

@@ -161,10 +161,12 @@
 				DEVELOPMENT_TEAM = 5C49Q9G3ML;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = Info.plist;
+				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "Call Notes turns the recording into text on this iPhone.";
 				INFOPLIST_KEY_CFBundleDisplayName = "Call Notes";
+				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Call Notes records the microphone, so it can transcribe the conversation on this iPhone.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
-				INFOPLIST_KEY_UIBackgroundModes = audio;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				INFOPLIST_KEY_UIFileSharingEnabled = YES;
@@ -186,10 +188,12 @@
 				DEVELOPMENT_TEAM = 5C49Q9G3ML;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = Info.plist;
+				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "Call Notes turns the recording into text on this iPhone.";
 				INFOPLIST_KEY_CFBundleDisplayName = "Call Notes";
+				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Call Notes records the microphone, so it can transcribe the conversation on this iPhone.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
-				INFOPLIST_KEY_UIBackgroundModes = audio;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				INFOPLIST_KEY_UIFileSharingEnabled = YES;
