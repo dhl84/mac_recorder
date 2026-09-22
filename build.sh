@@ -12,6 +12,7 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp .build/release/InterviewRecorder "$APP/Contents/MacOS/InterviewRecorder"
 cp Resources/Info.plist "$APP/Contents/Info.plist"
 cp Resources/callbrief.py "$APP/Contents/Resources/callbrief.py"
+cp Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 
 # whisper invents speech in the quiet parts of a call without this model.
 VAD="$HOME/.cache/whisper-vad/ggml-silero-v5.1.2.bin"

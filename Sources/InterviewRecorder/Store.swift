@@ -35,14 +35,24 @@ enum Store {
             .appendingPathComponent("Documents/InterviewRecorder")
     }()
 
-    /// The dataset folder. One folder for each role.
-    static let dataset: URL = {
-        if let custom = ProcessInfo.processInfo.environment["INTERVIEW_DATASET"] {
-            return URL(fileURLWithPath: (custom as NSString).expandingTildeInPath)
+    /// The dataset folder, with one folder for each role. The user picks it in the
+    /// window, because a window that Finder starts inherits no shell variable.
+    /// The variable still works, for the command line and for the self-test.
+    private static let datasetKey = "datasetRoot"
+
+    static var dataset: URL {
+        get {
+            if let custom = ProcessInfo.processInfo.environment["INTERVIEW_DATASET"] {
+                return URL(fileURLWithPath: (custom as NSString).expandingTildeInPath)
+            }
+            if let saved = UserDefaults.standard.string(forKey: datasetKey), !saved.isEmpty {
+                return URL(fileURLWithPath: saved)
+            }
+            return FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent("Documents/InterviewDataset")
         }
-        return FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Documents/InterviewDataset")
-    }()
+        set { UserDefaults.standard.set(newValue.path, forKey: datasetKey) }
+    }
 
     static func slug(_ text: String) -> String {
         let lower = text.lowercased()

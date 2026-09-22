@@ -258,6 +258,17 @@ struct ContentView: View {
                         .disabled(!session.hasTranscript)
                 }
 
+                HStack(spacing: 6) {
+                    Text("Dataset: \(Store.dataset.path)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.head)
+                    Button("Change") { pickDataset() }
+                        .controlSize(.small)
+                    Spacer()
+                }
+
                 Picker("", selection: $pane) {
                     ForEach(Pane.allCases) { Text($0.rawValue).tag($0) }
                 }
@@ -291,6 +302,20 @@ struct ContentView: View {
                     .frame(maxWidth: 440)
             }
             .padding()
+        }
+    }
+
+    /// Finder starts the app with no shell variables, so the folder is picked here.
+    private func pickDataset() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.canCreateDirectories = true
+        panel.directoryURL = Store.dataset
+        panel.prompt = "Use this folder"
+        if panel.runModal() == .OK, let url = panel.url {
+            Store.dataset = url
+            library.message = "The dataset folder is now \(url.path)."
         }
     }
 

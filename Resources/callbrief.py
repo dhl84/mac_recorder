@@ -278,8 +278,9 @@ def split(folder, gap, apply_it):
 
 def selftest():
     """The split maths, which decides where a recording gets cut."""
-    # The real recording of 2026-09-22: the microphone went quiet often, the far
-    # end went quiet rarely, and the two overlapped once, at the call switch.
+    # Numbers from a test recording that ran two calls together: the microphone
+    # went quiet often, the far end rarely, and the two overlapped once, at the
+    # switch between the calls.
     mic = [(100.0, 140.0), (470.0, 495.0)]
     system = [(138.0, 143.0), (478.9, 488.6)]
     found = overlaps(mic, system, 8)

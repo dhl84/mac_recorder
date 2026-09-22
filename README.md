@@ -60,9 +60,9 @@ name.
 
 An empty name field gives the call an automatic title. After the transcription
 the model reads the first part of the transcript and writes a title of 5 to 12
-words. It names the group and the subject, such as "Board: pay review and
-new member recruitment". Press Rename to write a new one over a title
-you do not like.
+words. It names the group and the subject, such as "Board: pay review and new
+member recruitment". Press Rename to write a new one over a title you do not
+like.
 
 ### Two calls in one recording
 
@@ -75,9 +75,9 @@ The app shows each join it finds and waits for you. It then cuts both tracks at
 the middle of the quiet spell, writes one folder for each call, and transcribes
 and names each one. The original folder stays as it is.
 
-A test recording ran from one call straight into a second
-call. The detector found one join, at 478.9 seconds to 488.6 seconds. Part 1 ends
-with the goodbye of the first call and part 2 starts with the greeting of the second.
+A test recording ran from one call straight into a second one. The detector found
+one join, at 478.9 seconds to 488.6 seconds. Part 1 ended with the goodbye of the
+first call and part 2 started with the greeting of the second.
 
 Raise the gap with `--gap` on the command line if a long pause in one call gets
 cut by mistake.
@@ -103,6 +103,7 @@ brief together.
 | --- | --- | --- |
 | Recordings | `~/Documents/InterviewRecorder/<date>-<name>/` | `INTERVIEW_RECORDER_HOME` |
 | Dataset | `~/Documents/InterviewDataset/` | `INTERVIEW_DATASET` |
+| App icon | `Resources/AppIcon.icns`, drawn by `make_icon.sh` | |
 | Whisper model | `ggml-large-v3-turbo.bin` from OpenSuperWhisper | `INTERVIEW_WHISPER_MODEL` |
 | Voice activity model | `~/.cache/whisper-vad/ggml-silero-v5.1.2.bin` | `INTERVIEW_VAD_MODEL` |
 | Ollama model | `gemma4:26b-a4b-it-qat` | `INTERVIEW_MODEL` |
@@ -114,13 +115,18 @@ transcription, `mic.srt`, `system.srt` and `transcript.md`. Summarise adds
 The brief goes to Ollama on this machine. No transcript and no audio reaches an
 external service.
 
+Press Change next to "Dataset" to pick the folder. Finder starts the app with no
+shell variables, so the window keeps the choice instead. `INTERVIEW_DATASET`
+still works for the command line and for the test.
+
 `Add to dataset` copies `transcript.md` into the application folder as
 `interview-transcript-<date>.md` and appends one line to `interviews.jsonl` in the
-dataset root. A workbench that reads the same folders sees the transcript beside the
-job ad and the research notes for that role.
+dataset root. Point `INTERVIEW_DATASET` at the folder your own application
+workbench reads, and each transcript lands beside the job ad and the research
+notes for that role.
 
 Recordings stay outside the code repositories. A call is private, and a
-repository is not the place for it. Keep the dataset folder out of any public repository.
+repository is not the place for it.
 
 ## Voice activity detection
 
@@ -133,6 +139,14 @@ decoder skips the silence.
 
 The cost is a coarser timestamp. The model joins the speech across a removed
 silence, so a segment can span a minute. The start of each segment stays correct.
+
+## The icon
+
+`make_icon.sh` draws `Resources/icon.svg` and builds `AppIcon.icns`. The blue bars
+above the axis are the microphone. The amber bars below are the system output.
+The red bar through the middle is the record mark. Run the script only after
+you change the drawing, because the repository holds the built icon. It needs
+`rsvg-convert` from `brew install librsvg`.
 
 ## Audio format
 
@@ -171,8 +185,8 @@ and writes an index row:
 INTERVIEW_DATASET=/tmp/ds "$APP" --self-test
 ```
 
-`callbrief.py selftest` checks the split maths against the numbers from the real
-recording of 2026-09-22. It needs no audio and no model.
+`callbrief.py selftest` checks the split maths against the numbers from that test
+recording. It needs no audio and no model.
 
 ## Limits
 
