@@ -68,7 +68,7 @@ export ASC_ISSUER_ID=...     # the issuer uuid of the account
 export ASC_KEY_PATH=...      # the path to the .p8, which never enters git
 
 cd ios
-fastlane mkapp               # registers the bundle id, creates the app record
+fastlane mkapp               # registers the bundle id, prints the web step
 fastlane fixprofile          # makes the App Store provisioning profile
 
 cd ..
@@ -89,9 +89,12 @@ fastlane group email:you@example.com
 fastlane state
 ```
 
-`mkapp` stops if another app already holds the name "Call Notes", because the App
-Store keeps app names unique across the whole store. Pass `name:"Call Notes DL"`
-to use a different one.
+`mkapp` registers the bundle id and stops there. Apple allows no app creation
+through the API: a `POST` to `/v1/apps` answers "The resource 'apps' does not
+allow 'CREATE'". Create the record once at
+https://appstoreconnect.apple.com/apps with the values the lane prints. App Store
+names are unique across the whole store, so another app may already hold "Call
+Notes".
 
 An internal TestFlight group needs no App Review, so a build reaches your own
 iPhone in minutes. An external group needs review, and a call recorder gets close
