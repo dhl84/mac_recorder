@@ -16,6 +16,13 @@ Microsoft Teams, Google Meet, Zoom and WhatsApp all play the far end that way, s
 each of them records without any per-app setup. The app excludes its own audio,
 so no echo enters the recording.
 
+## There is an iPhone app too
+
+`ios/` holds Call Notes, an iPhone app that records, transcribes and summarises on
+the device. It cannot record the far end of a Teams, Zoom, Meet or WhatsApp call,
+because iOS gives no app the audio of another app. It records the microphone, so a
+call on speakerphone gives one track with both sides on it. See `ios/README.md`.
+
 ## Before you record
 
 Ask each person on the call for permission to record. In the United Kingdom a

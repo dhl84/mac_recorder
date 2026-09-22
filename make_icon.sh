@@ -36,6 +36,18 @@ open("Resources/icon.svg", "w").write(svg)
 print("wrote Resources/icon.svg")
 PY
 
+# iOS masks the icon itself, so its source is a full square with no transparent
+# corners. macOS wants the rounded shape drawn in.
+python3 - <<'PY2'
+import pathlib, re
+svg = pathlib.Path("Resources/icon.svg").read_text()
+ios = svg.replace('rx="232"', 'rx="0"')
+ios = re.sub(r'\n  <rect x="8" y="8"[^\n]*\n', '\n', ios)
+pathlib.Path("Resources/icon-ios.svg").write_text(ios)
+PY2
+rsvg-convert -w 1024 -h 1024 Resources/icon-ios.svg -o ios/App/Assets.xcassets/AppIcon.appiconset/icon1024.png
+echo "wrote the iOS icon"
+
 SET=build/AppIcon.iconset
 rm -rf "$SET"
 mkdir -p "$SET"
