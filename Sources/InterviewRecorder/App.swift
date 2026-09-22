@@ -8,6 +8,12 @@ enum SortBy: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
+enum Pane: String, CaseIterable, Identifiable {
+    case brief = "Brief"
+    case transcript = "Transcript"
+    var id: String { rawValue }
+}
+
 @MainActor
 final class Library: ObservableObject {
     @Published var sessions: [Session] = []
@@ -16,6 +22,8 @@ final class Library: ObservableObject {
     @Published var selected: Session?
     @Published var busy = false
     @Published var message = ""
+    @Published var found: [Brief.Boundary] = []
+    @Published var askSplit = false
 
     var shown: [Session] {
         let query = search.trimmingCharacters(in: .whitespaces).lowercased()
@@ -28,21 +36,20 @@ final class Library: ObservableObject {
     }
 
     func reload() {
+        let keep = selected?.url
         sessions = Store.list()
-        if let selected, !sessions.contains(where: { $0.url == selected.url }) { self.selected = nil }
-        if let current = selected { self.selected = sessions.first { $0.url == current.url } }
+        selected = sessions.first { $0.url == keep }
     }
 
-    func transcribe(_ session: Session) {
+    /// Runs a slow job off the main thread and puts the reason on screen if it fails.
+    private func work(_ first: String, _ job: @escaping () throws -> String) {
         busy = true
-        message = "Starting whisper…"
+        message = first
         Task.detached(priority: .userInitiated) {
             do {
-                _ = try Transcribe.run(session) { text in
-                    Task { @MainActor in self.message = text }
-                }
+                let done = try job()
                 await MainActor.run {
-                    self.message = "Transcript written."
+                    self.message = done
                     self.busy = false
                     self.reload()
                 }
@@ -50,8 +57,69 @@ final class Library: ObservableObject {
                 await MainActor.run {
                     self.message = error.localizedDescription
                     self.busy = false
+                    self.reload()
                 }
             }
+        }
+    }
+
+    /// Transcribes, then names the call when the user left the field empty.
+    func transcribe(_ session: Session) {
+        work("Starting whisper…") {
+            _ = try Transcribe.run(session) { text in
+                Task { @MainActor in self.message = text }
+            }
+            if let name = try? Brief.title(session), !name.isEmpty {
+                return "Transcript written. Named it \"\(name)\"."
+            }
+            return "Transcript written."
+        }
+    }
+
+    func summarise(_ session: Session) {
+        work("Asking the model for the brief…") {
+            try Brief.write(session)
+            return "Brief written."
+        }
+    }
+
+    func rename(_ session: Session) {
+        work("Asking the model for a title…") {
+            guard let name = try Brief.title(session, force: true) else {
+                return "The model gave no usable title."
+            }
+            return "Named it \"\(name)\"."
+        }
+    }
+
+    func findSplit(_ session: Session) {
+        busy = true
+        message = "Looking for a second call…"
+        Task.detached(priority: .userInitiated) {
+            let rows = (try? Brief.boundaries(session)) ?? []
+            await MainActor.run {
+                self.found = rows
+                self.busy = false
+                self.message = rows.isEmpty
+                    ? "One call. No spell of quiet on both sides long enough to be a join."
+                    : "Found \(rows.count) join\(rows.count == 1 ? "" : "s")."
+                self.askSplit = !rows.isEmpty
+            }
+        }
+    }
+
+    /// Cuts the recording, then transcribes and names each part. The original stays.
+    func applySplit(_ session: Session) {
+        work("Cutting the tracks…") {
+            let parts = try Brief.applySplit(session)
+            for url in parts {
+                let part = Session(url: url, label: "", date: session.date, duration: 0)
+                _ = try? Transcribe.run(part) { text in
+                    Task { @MainActor in self.message = "\(url.lastPathComponent): \(text)" }
+                }
+                _ = try? Brief.title(part)
+            }
+            return "Split into \(parts.count) calls. The original folder stays."
         }
     }
 
@@ -70,6 +138,7 @@ struct ContentView: View {
     @StateObject private var library = Library()
     @State private var label = ""
     @State private var datasetFolder = ""
+    @State private var pane: Pane = .brief
 
     var body: some View {
         NavigationSplitView {
@@ -78,17 +147,22 @@ struct ContentView: View {
             detail
         }
         .toolbar { ToolbarItem(placement: .principal) { recordBar } }
-        .frame(minWidth: 880, minHeight: 520)
+        .frame(minWidth: 940, minHeight: 560)
         .onAppear { library.reload() }
+        .alert("Split this recording?", isPresented: $library.askSplit) {
+            Button("Split") { if let s = library.selected { library.applySplit(s) } }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text(library.found.map(\.describe).joined(separator: "\n")
+                 + "\n\nThe original folder stays as it is.")
+        }
     }
-
-    // MARK: record
 
     private var recordBar: some View {
         HStack(spacing: 10) {
-            TextField("Company and role", text: $label)
+            TextField("Company and role, or leave it empty", text: $label)
                 .textFieldStyle(.roundedBorder)
-                .frame(width: 240)
+                .frame(width: 260)
                 .disabled(recorder.running)
             Button(recorder.running ? "Stop" : "Record") {
                 Task {
@@ -110,27 +184,24 @@ struct ContentView: View {
         }
     }
 
-    // MARK: list
-
     private var list: some View {
         VStack(spacing: 0) {
-            HStack {
-                Picker("", selection: $library.sortBy) {
-                    ForEach(SortBy.allCases) { Text($0.rawValue).tag($0) }
-                }
-                .pickerStyle(.segmented)
-                .labelsHidden()
+            Picker("", selection: $library.sortBy) {
+                ForEach(SortBy.allCases) { Text($0.rawValue).tag($0) }
             }
+            .pickerStyle(.segmented)
+            .labelsHidden()
             .padding(8)
             List(library.shown, selection: $library.selected) { session in
                 VStack(alignment: .leading, spacing: 2) {
                     HStack {
-                        Text(session.label).fontWeight(.medium)
+                        Text(session.label.isEmpty ? session.url.lastPathComponent : session.label)
+                            .fontWeight(.medium)
                         Spacer()
-                        if session.hasTranscript {
-                            Image(systemName: "text.alignleft").foregroundStyle(.secondary)
-                        }
+                        if session.hasBrief { Image(systemName: "doc.text") }
+                        if session.hasTranscript { Image(systemName: "text.alignleft") }
                     }
+                    .foregroundStyle(.secondary)
                     Text("\(session.date.formatted(date: .abbreviated, time: .shortened)) · \(Store.clock(session.duration))")
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -139,16 +210,15 @@ struct ContentView: View {
             }
             .searchable(text: $library.search, placement: .sidebar, prompt: "Filter by name")
         }
-        .frame(minWidth: 260)
+        .frame(minWidth: 280)
     }
-
-    // MARK: detail
 
     @ViewBuilder
     private var detail: some View {
         if let session = library.selected {
             VStack(alignment: .leading, spacing: 12) {
-                Text(session.label).font(.title2)
+                Text(session.label.isEmpty ? session.url.lastPathComponent : session.label)
+                    .font(.title2)
                 Text("\(session.date.formatted()) · \(Store.clock(session.duration)) · \(String(format: "%.1f", session.sizeMB)) MB")
                     .font(.callout)
                     .foregroundStyle(.secondary)
@@ -157,7 +227,16 @@ struct ContentView: View {
                     Button(session.hasTranscript ? "Transcribe again" : "Transcribe") {
                         library.transcribe(session)
                     }
-                    .disabled(library.busy)
+                    Button("Summarise") { library.summarise(session) }
+                        .disabled(!session.hasTranscript)
+                    Button("Rename") { library.rename(session) }
+                        .disabled(!session.hasTranscript)
+                    Button("Split calls") { library.findSplit(session) }
+                    if library.busy { ProgressView().controlSize(.small) }
+                }
+                .disabled(library.busy)
+
+                HStack {
                     Button("Show in Finder") {
                         NSWorkspace.shared.activateFileViewerSelecting([session.url])
                     }
@@ -165,57 +244,62 @@ struct ContentView: View {
                         Store.delete(session)
                         library.reload()
                     }
-                    if library.busy { ProgressView().controlSize(.small) }
-                }
-
-                HStack {
+                    Spacer()
                     TextField("Application folder", text: $datasetFolder)
                         .textFieldStyle(.roundedBorder)
-                        .frame(width: 260)
+                        .frame(width: 220)
                     Menu("Pick") {
                         ForEach(Transcribe.datasetFolders(), id: \.self) { name in
                             Button(name) { datasetFolder = name }
                         }
                     }
-                    .frame(width: 80)
-                    Button("Add to dataset") {
-                        library.addToDataset(session, folder: datasetFolder)
-                    }
-                    .disabled(!session.hasTranscript)
+                    .frame(width: 70)
+                    Button("Add to dataset") { library.addToDataset(session, folder: datasetFolder) }
+                        .disabled(!session.hasTranscript)
                 }
 
-                Divider()
+                Picker("", selection: $pane) {
+                    ForEach(Pane.allCases) { Text($0.rawValue).tag($0) }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .frame(width: 220)
+
                 ScrollView {
-                    Text(transcriptText(session))
+                    Text(text(session))
                         .font(.system(.body, design: .monospaced))
                         .textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                Spacer(minLength: 0)
                 Text(library.message.isEmpty ? recorder.status : library.message)
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
             .padding()
-            .onAppear { if datasetFolder.isEmpty { datasetFolder = Store.slug(session.label) } }
+            .onChange(of: library.selected) { _, new in
+                datasetFolder = Store.slug(new?.label ?? "")
+            }
         } else {
             VStack(spacing: 8) {
                 Text("Name the call, then press Record.").font(.title3)
                 Text(recorder.status.isEmpty
-                     ? "The microphone and the system output both record. Every app that plays the far end through the speakers is covered."
+                     ? "Leave the name empty and the model writes one from the transcript. If you stay on the line into a second call, press Split calls afterwards."
                      : recorder.status)
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
-                    .frame(maxWidth: 420)
+                    .frame(maxWidth: 440)
             }
             .padding()
         }
     }
 
-    private func transcriptText(_ session: Session) -> String {
-        (try? String(contentsOf: session.transcript, encoding: .utf8))
-            ?? "No transcript yet. Press Transcribe to run whisper on both tracks."
+    private func text(_ session: Session) -> String {
+        let file = pane == .brief ? session.brief : session.transcript
+        if let body = try? String(contentsOf: file, encoding: .utf8) { return body }
+        return pane == .brief
+            ? "No brief yet. Transcribe the call, then press Summarise."
+            : "No transcript yet. Press Transcribe to run whisper on both tracks."
     }
 }
 

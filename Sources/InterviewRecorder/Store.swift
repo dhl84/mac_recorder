@@ -10,7 +10,9 @@ struct Session: Identifiable, Hashable {
     var id: URL { url }
 
     var transcript: URL { url.appendingPathComponent("transcript.md") }
+    var brief: URL { url.appendingPathComponent("brief.md") }
     var hasTranscript: Bool { FileManager.default.fileExists(atPath: transcript.path) }
+    var hasBrief: Bool { FileManager.default.fileExists(atPath: brief.path) }
     var sizeMB: Double {
         var bytes = 0
         for name in ["mic.wav", "system.wav"] {

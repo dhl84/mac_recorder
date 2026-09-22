@@ -12,6 +12,18 @@ enum Transcribe {
             .path
     }
 
+    /// Voice activity detection. Without it whisper invents speech in the quiet
+    /// parts of a call: one real recording gave "Thank you." 14 times over the
+    /// gaps where nobody spoke. With it those segments disappear and the run is
+    /// three times faster, because the decoder skips the silence.
+    static var vadModel: String {
+        if let custom = ProcessInfo.processInfo.environment["INTERVIEW_VAD_MODEL"] {
+            return (custom as NSString).expandingTildeInPath
+        }
+        return FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".cache/whisper-vad/ggml-silero-v5.1.2.bin").path
+    }
+
     static var binary: String {
         for path in ["/opt/homebrew/bin/whisper-cli", "/usr/local/bin/whisper-cli"]
         where FileManager.default.isExecutableFile(atPath: path) { return path }
@@ -36,8 +48,14 @@ enum Transcribe {
             guard FileManager.default.fileExists(atPath: wav.path) else { continue }
             progress("Transcribing \(file) as \(speaker)…")
             let stem = session.url.appendingPathComponent(speaker == "Me" ? "mic" : "system")
-            let result = shell(binary, ["-m", model, "-f", wav.path, "-l", "auto",
-                                       "-osrt", "-of", stem.path, "-np"])
+            var args = ["-m", model, "-f", wav.path, "-l", "auto",
+                        "-osrt", "-of", stem.path, "-np"]
+            if FileManager.default.fileExists(atPath: vadModel) {
+                args += ["--vad", "-vm", vadModel]
+            } else {
+                progress("No VAD model at \(vadModel). The quiet parts may give invented text.")
+            }
+            let result = shell(binary, args)
             guard result.code == 0 else {
                 throw fail("whisper-cli failed on \(file): \(result.err.suffix(400))")
             }

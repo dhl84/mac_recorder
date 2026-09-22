@@ -1,7 +1,8 @@
 # Interview Recorder
 
 A macOS app that records both sides of a call and transcribes them with a local
-whisper model. It copies each transcript into a dataset folder.
+whisper model. It names the call, writes a brief, and copies the transcript into a
+dataset folder. Nothing leaves the machine.
 
 The app records two files, not one mix. The microphone track is you. The system
 output track is the other people on the call. Whisper reads each track alone, so
@@ -46,13 +47,55 @@ each second and discards every frame. It records no picture.
 
 ## Use
 
-1. Type the company and the role in the toolbar field.
+1. Type the company and the role in the toolbar field, or leave it empty.
 2. Press Record. Press Stop at the end.
 3. Select the call in the list and press Transcribe.
-4. Type or pick an application folder and press Add to dataset.
+4. Press Summarise for the brief.
+5. Type or pick an application folder and press Add to dataset.
 
 The list sorts by date, by name or by length, and the search field filters by
 name.
+
+### The title
+
+An empty name field gives the call an automatic title. After the transcription
+the model reads the first part of the transcript and writes a title of 5 to 12
+words. It names the group and the subject, such as "Board: pay review and
+new member recruitment". Press Rename to write a new one over a title
+you do not like.
+
+### Two calls in one recording
+
+If you leave the recorder on and join a second call, press Split calls. The app
+looks for a spell where both tracks go quiet together for 8 seconds or more. One
+track alone proves nothing, because the far end goes quiet whenever you speak.
+Both tracks quiet at the same time means nobody is on the line.
+
+The app shows each join it finds and waits for you. It then cuts both tracks at
+the middle of the quiet spell, writes one folder for each call, and transcribes
+and names each one. The original folder stays as it is.
+
+A test recording ran from one call straight into a second
+call. The detector found one join, at 478.9 seconds to 488.6 seconds. Part 1 ends
+with the goodbye of the first call and part 2 starts with the greeting of the second.
+
+Raise the gap with `--gap` on the command line if a long pause in one call gets
+cut by mistake.
+
+### The brief
+
+Summarise sends the transcript to Ollama on this machine and writes `brief.md`
+with these headings: The point, Decisions, Actions, Key points, Facts and
+numbers, Open questions. Each decision and each key point carries a timestamp.
+Each action names an owner and a date, or says "unstated".
+
+The prompts and the model plumbing come from `ytsum.py`, the YouTube brief tool
+in the `ytsum` repository. The headings differ, because a call has decisions and
+actions and a video has none.
+
+Ollama must run, with the model `gemma4:26b-a4b-it-qat`. Start it with
+`ollama serve`. An 8 minute call takes about 15 seconds for the title and the
+brief together.
 
 ## Where the files go
 
@@ -61,9 +104,15 @@ name.
 | Recordings | `~/Documents/InterviewRecorder/<date>-<name>/` | `INTERVIEW_RECORDER_HOME` |
 | Dataset | `~/Documents/InterviewDataset/` | `INTERVIEW_DATASET` |
 | Whisper model | `ggml-large-v3-turbo.bin` from OpenSuperWhisper | `INTERVIEW_WHISPER_MODEL` |
+| Voice activity model | `~/.cache/whisper-vad/ggml-silero-v5.1.2.bin` | `INTERVIEW_VAD_MODEL` |
+| Ollama model | `gemma4:26b-a4b-it-qat` | `INTERVIEW_MODEL` |
 
 Each recording folder holds `mic.wav`, `system.wav`, `meta.json` and, after the
-transcription, `mic.srt`, `system.srt` and `transcript.md`.
+transcription, `mic.srt`, `system.srt` and `transcript.md`. Summarise adds
+`brief.md`.
+
+The brief goes to Ollama on this machine. No transcript and no audio reaches an
+external service.
 
 `Add to dataset` copies `transcript.md` into the application folder as
 `interview-transcript-<date>.md` and appends one line to `interviews.jsonl` in the
@@ -72,6 +121,18 @@ job ad and the research notes for that role.
 
 Recordings stay outside the code repositories. A call is private, and a
 repository is not the place for it. Keep the dataset folder out of any public repository.
+
+## Voice activity detection
+
+`build.sh` downloads a 0.9 MB silero model to `~/.cache/whisper-vad/`. Without it
+whisper invents speech in the quiet parts of a call. The first real recording gave
+"Thank you." 14 times over the gaps where nobody spoke. `--suppress-nst` made it
+worse, with 19 repeats of a different phrase. The voice activity model removed
+every invented segment and cut the run from 11 seconds to 4 seconds, because the
+decoder skips the silence.
+
+The cost is a coarser timestamp. The model joins the speech across a removed
+silence, so a segment can span a minute. The start of each segment stays correct.
 
 ## Audio format
 
@@ -86,6 +147,14 @@ APP="build/Interview Recorder.app/Contents/MacOS/InterviewRecorder"
 
 "$APP" --self-test                 # parser, merge and dataset checks
 "$APP" --transcribe ~/Documents/InterviewRecorder/20260922-1100-acme
+
+BRIEF="build/Interview Recorder.app/Contents/Resources/callbrief.py"
+
+python3 "$BRIEF" selftest                       # the split maths
+python3 "$BRIEF" title  <folder>                # name an unnamed call
+python3 "$BRIEF" brief  <folder>                # write brief.md
+python3 "$BRIEF" split  <folder>                # report the joins, change nothing
+python3 "$BRIEF" split  <folder> --apply --gap 12
 ```
 
 `--transcribe` writes `transcript.md` for one folder without the window. Use it
@@ -102,8 +171,18 @@ and writes an index row:
 INTERVIEW_DATASET=/tmp/ds "$APP" --self-test
 ```
 
+`callbrief.py selftest` checks the split maths against the numbers from the real
+recording of 2026-09-22. It needs no audio and no model.
+
 ## Limits
 
 The recorder makes no speaker separation inside one track. If two people share
 one microphone, both appear as "Me". A meeting room with one Mac gives one
-speaker label for the whole room.
+speaker label for the whole room. Two people on the far end both appear as
+"Them", and the brief separates them only where the transcript says a name.
+
+The split detector needs a quiet spell. Two calls with no gap between them stay
+as one recording.
+
+The model writes the title from the first part of the transcript. A call that
+changes subject after that gets a title from the opening subject.
