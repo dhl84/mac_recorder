@@ -61,6 +61,54 @@ enum SelfTest {
               Split.quiet(levels, window: 0.25, floor: -45, gap: 30).isEmpty)
         check("a loud file gives no cut",
               Split.quiet([Float](repeating: loud, count: 400), window: 0.25, floor: -45, gap: 20).isEmpty)
+        // The brief the on-device model wrote for "hello? hello? testing 1, 2, 3" on
+        // 2026-09-23. Every line came from the prompt, not from the speech.
+        let said = "Hello? Hello? Testing 1, 2, 3."
+        let invented = """
+            ## The point
+            The call settled an issue with a project.
+
+            ## Decisions
+            - [01:12] - a speaker: The project will proceed with the current timeline.
+
+            ## Actions
+            - [01:12] - a speaker: The project manager will review the current progress and report back to the team.
+
+            ## Key points
+            - [01:12] - a speaker: The project manager will review the current progress and report back to the team.
+            - [01:12] - a speaker: The project manager will review the current progress and report back to the team.
+
+            ## Facts and numbers
+            - 40: the agreed price in pounds.
+
+            ## Open questions
+            - [01:12] - a speaker: Are there any other concerns or issues that need to be addressed before the project begins?
+            """
+        let cleaned = Grounding.clean(invented, transcript: said, duration: 5)
+        let survivors = cleaned.components(separatedBy: "\n")
+            .filter { $0.hasPrefix("- ") && $0 != "- none" }
+        check("the invented brief loses every line", survivors.isEmpty, survivors.joined(separator: " | "))
+        check("each emptied section says none",
+              cleaned.components(separatedBy: "- none").count - 1 == 6, cleaned)
+        check("a timestamp past the end fails",
+              Grounding.failure("- [01:12] Testing hello", transcript: said, duration: 5) != nil)
+        check("an hh:mm:ss stamp inside the call stays",
+              Grounding.failure("- [00:00:04] The salary is agreed", transcript: "the salary is agreed", duration: 30) == nil)
+        check("an hh:mm:ss stamp past the end fails",
+              Grounding.failure("- [00:01:12] The salary is agreed", transcript: "the salary is agreed", duration: 30) != nil)
+        check("a number the call never said fails",
+              Grounding.failure("- 40: the agreed price", transcript: "the salary is agreed", duration: 90) != nil)
+        check("six words never reach the model",
+              said.split(whereSeparator: \.isWhitespace).count < Grounding.minimumWords)
+
+        // A line the transcript does back must survive, or the check is useless.
+        let real = "We agreed the price at 40 pounds. Sarah will send the contract by Friday."
+        check("a supported decision stays",
+              Grounding.failure("- [00:04] The price is agreed at 40 pounds", transcript: real, duration: 30) == nil,
+              Grounding.failure("- [00:04] The price is agreed at 40 pounds", transcript: real, duration: 30) ?? "")
+        check("a supported action stays",
+              Grounding.failure("- [Sarah] Send the contract, by Friday", transcript: real, duration: 30) == nil,
+              Grounding.failure("- [Sarah] Send the contract, by Friday", transcript: real, duration: 30) ?? "")
         return out
     }
 }

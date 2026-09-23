@@ -72,13 +72,21 @@ enum Brief {
         let body = Transcribe.speech(session)
         guard !body.isEmpty else { throw fail("Transcribe the call first.") }
         let label = session.label
+        let head = "# \(label.isEmpty ? session.url.lastPathComponent : label)\n\n"
+
+        let spoken = body.split(whereSeparator: \.isWhitespace).count
+        if spoken < Grounding.minimumWords {
+            try (head + Grounding.tooShort(words: spoken) + "\n")
+                .write(to: session.brief, atomically: true, encoding: .utf8)
+            return
+        }
 
         let parts = chunks(body)
         var briefs: [String] = []
         for (i, part) in parts.enumerated() {
             progress("Part \(i + 1) of \(parts.count)…")
             let model = LanguageModelSession(instructions: briefInstructions)
-            briefs.append(try await model.respond(to: part).content)
+            briefs.append(try await model.respond(to: "TRANSCRIPT:\n" + part).content)
         }
 
         var out = briefs[0]
@@ -93,40 +101,46 @@ enum Brief {
                 .joined(separator: "\n\n")).content
         }
 
-        let head = "# \(label.isEmpty ? session.url.lastPathComponent : label)\n\n"
-            + "Brief from the on-device model. Source: transcript.md.\n\n"
-        try (head + out.trimmingCharacters(in: .whitespacesAndNewlines) + "\n")
+        let checked = Grounding.clean(out, transcript: body, duration: session.duration)
+        try (head + "Brief from the on-device model. Every line below appears in the transcript.\n\n"
+             + checked + "\n")
             .write(to: session.brief, atomically: true, encoding: .utf8)
     }
 
+    // No example content anywhere in here. Given a near-empty transcript, the
+    // model copied an example timestamp and an example salary into the brief.
+    // Every format below uses placeholders, and no section asks for a count.
     private static let briefInstructions = """
-        You read the transcript of one call and write a brief for a reader who was not on it.
+        You write a brief of one recorded call from its transcript.
         \(style)
+        Use only what the transcript says. Never copy words from these instructions into
+        the brief. If the transcript gives nothing for a section, write "- none" under it.
+        A short recording gives "- none" in most sections, and that is the right answer.
         The recording has one microphone track, so no line names a speaker. Use the names
-        the transcript gives, and write "a speaker" where it gives none.
+        the transcript gives.
 
         Output this Markdown and nothing else:
 
         ## The point
-        One sentence. What this call settled or moved forward.
+        One sentence: what the call settled.
 
         ## Decisions
-        Bullets, each starting "- " with a timestamp like "- [01:12] ". Write "- none" if
-        the call agreed nothing.
+        One bullet for each thing the speakers agreed, as "- [mm:ss] what they agreed".
+        mm:ss is the time in the transcript heading above those words.
 
         ## Actions
-        Bullets like "- [owner] the action, by when". Write "unstated" for a date the call
-        did not give. Write "- none" if the call set no action.
+        One bullet for each task someone took on, as "- [who] the task, by when".
+        Write "unstated" when the transcript gives no date.
 
         ## Key points
-        Four to eight bullets with a timestamp. State the claim and the name.
+        At most eight bullets, as "- [mm:ss] the point". Fewer is better than padding.
 
         ## Facts and numbers
-        Each line as "value: what it measures", like "- 40: the agreed price in pounds".
-        Write "none stated" if the call gives none.
+        One line for each amount, date or name the transcript states, as
+        "- value: what it measures".
 
         ## Open questions
-        One to four bullets. Write "- none" if the call settled everything.
+        At most four bullets. What the call left unsettled.
         """
 
     // MARK: helpers

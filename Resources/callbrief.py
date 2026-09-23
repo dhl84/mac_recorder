@@ -46,42 +46,40 @@ Rules:
 TRANSCRIPT:
 {transcript}"""
 
+# No example content in here. A model given a thin transcript copies examples
+# into the brief as fact, so every format uses placeholders and no section asks
+# for a count. ground() below checks what comes back.
 BRIEF = """You read the transcript of one call. Write a brief for a reader who was not on it.
 
 {style}
 
 "Me" is the person who made the recording. "Them" is every other speaker, on one
 track, so two of them can appear in one block. Use the names the transcript gives.
+Use only what the transcript says. Never copy words from these instructions into the
+brief. If the transcript gives nothing for a section, write "- none" under it.
 
 Output this Markdown structure and nothing else:
 
 ## The point
-One sentence. What this call settled or moved forward.
+One sentence: what this call settled or moved forward.
 
 ## Decisions
-Bullets. Start each line with "- " and then a timestamp in brackets, like
-"- [mm:ss] what they agreed". Write only what the speakers agreed.
-Write "- none" if the call agreed nothing.
+One bullet for each thing the speakers agreed, as "- [mm:ss] what they agreed".
+mm:ss is the time in the transcript heading above those words.
 
 ## Actions
-Bullets. Write each line as "- [owner] the action, by when", like
-"- [who] the task, by when".
-Write "unstated" in place of a date the call did not give.
-Write "- none" if the call set no action.
+One bullet for each task someone took on, as "- [who] the task, by when".
+Write "unstated" when the transcript gives no date.
 
 ## Key points
 At most ten bullets, as "- [mm:ss] the point". Fewer is better than padding.
-State the claim and the name. Keep each bullet under 25 words.
 
 ## Facts and numbers
-Only the amounts, dates, names and titles the call states. Write each line as
-"value: what it measures", like "- 40: the agreed price in pounds" or
-"- 3 March: the date of the next review". A reader sees these lines alone, so a
-bare number is wrong. Write "none stated" if the call gives none.
+One line for each amount, date or name the transcript states, as
+"- value: what it measures". A bare number is wrong: name what it measures.
 
 ## Open questions
-One to four bullets. What the call left unsettled, or where a speaker guessed.
-Write "- none" if the call settled everything.
+At most four bullets. What the call left unsettled, or where a speaker guessed.
 
 TRANSCRIPT ({title}):
 {transcript}"""
@@ -135,6 +133,80 @@ def write_meta(folder, meta):
     (folder / "meta.json").write_text(json.dumps(meta, indent=2))
 
 
+# ------------------------------------------------------------------ ground ---
+
+MINIMUM_WORDS = 40
+COMMON = set("""about after again also because been before being call could does done
+each from have into just like made make more most none only other over said same
+should some speaker such than that their them then there these they this those
+through unstated very want were what when where which while will with would your
+them""".split())
+
+
+def words(text):
+    """The words a line must share with the transcript: four letters or more, not common."""
+    return [w for w in re.findall(r"[a-z0-9]+", text.lower())
+            if len(w) >= 4 and w not in COMMON and not w.isdigit()]
+
+
+def failure(line, transcript, duration):
+    """Returns why a bullet is not backed by the transcript, or None when it is."""
+    body = line.strip()
+    if body.startswith("- "):
+        body = body[2:]
+    if body.lower() in ("none", "none stated", "nothing relevant"):
+        return None
+    stamp = re.match(r"^\[(\d{1,2}):(\d{2})(?::(\d{2}))?\]\s*", body)
+    if stamp:
+        parts = [int(x) for x in stamp.groups() if x is not None]
+        seconds = parts[0] * 60 + parts[1] if len(parts) == 2 else parts[0] * 3600 + parts[1] * 60 + parts[2]
+        if duration and seconds > duration + 5:
+            return "timestamp past the end"
+        body = body[stamp.end():]
+    body = re.sub(r"^\[[^\]]*\]\s*", "", body)
+    said = set(re.findall(r"\d+", transcript))
+    stray = [n for n in re.findall(r"\d+", body) if n not in said]
+    if stray:
+        return f"number {stray[0]} not in the transcript"
+    own = words(body)
+    if not own:
+        return "no checkable words"
+    # Five letters of stem, so "reviewed" matches "review".
+    stems = {w[:5] for w in words(transcript)}
+    hits = sum(1 for w in own if w[:5] in stems)
+    return None if hits / len(own) >= 0.5 else f"{hits} of {len(own)} words in the transcript"
+
+
+def ground(brief, transcript, duration):
+    """Keeps the headings, drops unsupported lines and repeats, and writes
+    "- none" under a section that ends up empty."""
+    out, seen, kept, in_section = [], set(), 0, False
+    for raw in brief.splitlines():
+        line = raw.strip()
+        if line.startswith("## "):
+            if in_section and not kept:
+                out.append("- none")
+            out += ["", line]
+            in_section, kept = True, 0
+            continue
+        if not line or not in_section or line.lower() in seen:
+            continue
+        if failure(line, transcript, duration):
+            continue
+        seen.add(line.lower())
+        out.append(line)
+        kept += 1
+    if in_section and not kept:
+        out.append("- none")
+    return "\n".join(out).strip()
+
+
+def too_short(count):
+    sections = ["The point", "Decisions", "Actions", "Key points", "Facts and numbers", "Open questions"]
+    return (f"The transcript holds {count} words, under the {MINIMUM_WORDS} a brief needs, "
+            "so no model ran.\n\n" + "\n\n".join(f"## {s}\n\n- none" for s in sections))
+
+
 # ------------------------------------------------------------------- brief ---
 
 def speech(folder):
@@ -167,6 +239,13 @@ def title(folder, force=False):
 
 def brief(folder, force_title=False):
     body = speech(folder)
+    duration = float(read_meta(folder).get("duration") or 0)
+    spoken = len(re.sub(r"^\d\d:\d\d:\d\d (Me|Them)$", "", body, flags=re.M).split())
+    if spoken < MINIMUM_WORDS:
+        label = (read_meta(folder).get("label") or folder.name)
+        (folder / "brief.md").write_text(f"# {label}\n\n{too_short(spoken)}\n", encoding="utf-8")
+        print(str(folder / "brief.md"))
+        return label
     label = title(folder, force=force_title)
     parts = chunks(body)
     briefs = []
@@ -180,8 +259,9 @@ def brief(folder, force_title=False):
         joined = "\n\n".join(f"--- PART {i + 1} ---\n{b}" for i, b in enumerate(briefs))
         out = ask(MERGE.format(style=STYLE, parts=joined))
 
-    head = f"# {label or folder.name}\n\nBrief from {MODEL}. Source: transcript.md.\n\n"
-    (folder / "brief.md").write_text(head + out.strip() + "\n", encoding="utf-8")
+    head = (f"# {label or folder.name}\n\nBrief from {MODEL}. "
+            "Every line below appears in the transcript.\n\n")
+    (folder / "brief.md").write_text(head + ground(out, body, duration) + "\n", encoding="utf-8")
     print(str(folder / "brief.md"))
     return label
 
@@ -296,6 +376,37 @@ def selftest():
     assert shift("not a date", 10) == "not a date"
 
     assert "interview" in GENERIC and "Board: pay review".lower() not in GENERIC
+
+    # The brief an on-device model wrote for "hello? hello? testing 1, 2, 3".
+    said = "Hello? Hello? Testing 1, 2, 3."
+    invented = """## The point
+The call settled an issue with a project.
+
+## Decisions
+- [01:12] The project will proceed with the current timeline.
+
+## Actions
+- [01:12] The project manager will review the current progress and report back.
+
+## Key points
+- [01:12] The project manager will review the current progress and report back.
+- [01:12] The project manager will review the current progress and report back.
+
+## Facts and numbers
+- 40: the agreed price in pounds.
+
+## Open questions
+- [01:12] Are there any other concerns before the project begins?"""
+    cleaned = ground(invented, said, 5)
+    left = [l for l in cleaned.splitlines() if l.startswith("- ") and l != "- none"]
+    assert left == [], left
+    assert cleaned.count("- none") == 6, cleaned
+    assert failure("- [01:12] Testing hello", said, 5) == "timestamp past the end"
+    assert failure("- 40: the salary", "the salary is agreed", 90).startswith("number 40")
+    real = "We agreed the price at 40 pounds. Sarah will send the contract by Friday."
+    assert failure("- [00:04] The price is agreed at 40 pounds", real, 30) is None
+    assert failure("- [Sarah] Send the contract, by Friday", real, 30) is None
+    assert too_short(6).count("- none") == 6
     print("callbrief self-test passed")
 
 
