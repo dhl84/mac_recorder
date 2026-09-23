@@ -5,3 +5,6 @@ fastlane/report.xml
 fastlane/Preview.html
 *.p8
 .env
+ios/fastlane/report.xml
+ios/fastlane/README.md
+__pycache__/
