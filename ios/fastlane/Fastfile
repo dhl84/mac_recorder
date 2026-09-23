@@ -98,3 +98,16 @@ lane :state do
     UI.message("BUILD #{b.pre_release_version&.version}(#{b.version}) state=#{b.processing_state}")
   end
 end
+
+# Shows what App Store Connect holds for the app, to explain a refused upload.
+lane :probe do
+  connect!
+  c = Spaceship::ConnectAPI.tunes_request_client
+  app = Spaceship::ConnectAPI::App.find(BUNDLE)
+  UI.user_error!("no app record for #{BUNDLE}") unless app
+  a = c.get("v1/apps/#{app.id}").body["data"]["attributes"]
+  UI.message("RECORD id=#{app.id} name=#{a['name']} bundle=#{a['bundleId']} sku=#{a['sku']}")
+  (c.get("v1/apps/#{app.id}/appStoreVersions").body["data"] || []).each do |v|
+    UI.message("VERSION #{v.dig('attributes','versionString')} #{v.dig('attributes','platform')} #{v.dig('attributes','appStoreState')}")
+  end
+end
