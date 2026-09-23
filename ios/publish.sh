@@ -3,7 +3,7 @@
 # build. The App Store Connect details come from the environment, never from
 # this repository:
 #
-#   export ASC_KEY_ID=... ASC_ISSUER_ID=... ASC_KEY_PATH=...
+#   export ASC_KEY_ID=... ASC_ISSUER_ID=... ASC_KEY_PATH=... TESTER=you@example.com
 #   ios/publish.sh
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -12,7 +12,7 @@ export FASTLANE_SKIP_UPDATE_CHECK=1 FASTLANE_HIDE_CHANGELOG=1
 
 # TestFlight refuses a build number it has seen, so each run takes the clock.
 BUILD=${BUILD:-$(date +%y%m%d%H%M)}
-TESTER=${TESTER:-you@example.com}
+: "${TESTER:?set TESTER to the email of the TestFlight tester}"
 AUTH=(-allowProvisioningUpdates -authenticationKeyPath "$ASC_KEY_PATH"
       -authenticationKeyID "$ASC_KEY_ID" -authenticationKeyIssuerID "$ASC_ISSUER_ID")
 
