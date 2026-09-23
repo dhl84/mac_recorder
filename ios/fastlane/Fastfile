@@ -72,33 +72,36 @@ end
 
 # An internal group needs no App Review, so a build reaches the phone at once.
 #
-# The group goes through the API directly. fastlane's create_beta_group sends
-# publicLinkLimitEnabled, and Apple now refuses that field on an internal group.
+# Two Apple quirks shape this lane. fastlane's create_beta_group sends
+# publicLinkLimitEnabled, which Apple refuses on an internal group, so the group
+# goes through the API directly. And an old email-invite tester record from
+# another app cannot move into an internal group ("Tester(s) cannot be
+# assigned"), so the lane invites by email into the group, and Apple links that
+# invitation to the account user.
 lane :group do |o|
   connect!
   c = Spaceship::ConnectAPI.tunes_request_client
   app = Spaceship::ConnectAPI::App.find(BUNDLE)
   email = o[:email] or UI.user_error!("pass email:you@example.com")
-  groups = c.get("v1/apps/#{app.id}/betaGroups").body["data"] || []
-  group = groups.find { |g| g.dig("attributes", "name") == "Family" }
+  group = (c.get("v1/apps/#{app.id}/betaGroups").body["data"] || [])
+            .find { |g| g.dig("attributes", "name") == "Family" }
   gid = group && group["id"]
   unless gid
     gid = c.post("v1/betaGroups", { data: { type: "betaGroups",
       attributes: { name: "Family", isInternalGroup: true, hasAccessToAllBuilds: true },
       relationships: { app: { data: { type: "apps", id: app.id } } } } }).body.dig("data", "id")
     UI.success("GROUP_CREATED Family [#{gid}]")
-  else
-    UI.message("GROUP_PRESENT Family [#{gid}]")
   end
-  tester = Spaceship::ConnectAPI::BetaTester.all(filter: { email: email }).first
-  UI.user_error!("#{email} is not a tester on this account") unless tester
-  begin
-    c.post("v1/betaGroups/#{gid}/relationships/betaTesters",
-           { data: [{ type: "betaTesters", id: tester.id }] })
-    UI.success("ADDED #{email}")
-  rescue => e
-    UI.message("add note: #{e.message[0, 160]}")
+  members = (c.get("v1/betaGroups/#{gid}/betaTesters").body["data"] || [])
+              .map { |t| t.dig("attributes", "email") }
+  if members.include?(email)
+    UI.success("ALREADY_IN #{email}")
+    next
   end
+  c.post("v1/betaTesters", { data: { type: "betaTesters",
+    attributes: { email: email, firstName: o[:first] || "David", lastName: o[:last] || "Lee" },
+    relationships: { betaGroups: { data: [{ type: "betaGroups", id: gid }] } } } })
+  UI.success("INVITED #{email}")
 end
 
 lane :state do
@@ -123,3 +126,4 @@ lane :probe do
     UI.message("VERSION #{v.dig('attributes','versionString')} #{v.dig('attributes','platform')} #{v.dig('attributes','appStoreState')}")
   end
 end
+
