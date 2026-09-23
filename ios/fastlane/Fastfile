@@ -71,21 +71,33 @@ lane :up do |o|
 end
 
 # An internal group needs no App Review, so a build reaches the phone at once.
+#
+# The group goes through the API directly. fastlane's create_beta_group sends
+# publicLinkLimitEnabled, and Apple now refuses that field on an internal group.
 lane :group do |o|
   connect!
+  c = Spaceship::ConnectAPI.tunes_request_client
   app = Spaceship::ConnectAPI::App.find(BUNDLE)
-  existing = app.get_beta_groups.find { |g| g.name == "Family" }
-  g = existing || app.create_beta_group(group_name: "Family", is_internal_group: true,
-                                        has_access_to_all_builds: true)
-  UI.message("GROUP #{g.name.inspect} internal=#{g.is_internal_group} existed=#{!existing.nil?}")
   email = o[:email] or UI.user_error!("pass email:you@example.com")
+  groups = c.get("v1/apps/#{app.id}/betaGroups").body["data"] || []
+  group = groups.find { |g| g.dig("attributes", "name") == "Family" }
+  gid = group && group["id"]
+  unless gid
+    gid = c.post("v1/betaGroups", { data: { type: "betaGroups",
+      attributes: { name: "Family", isInternalGroup: true, hasAccessToAllBuilds: true },
+      relationships: { app: { data: { type: "apps", id: app.id } } } } }).body.dig("data", "id")
+    UI.success("GROUP_CREATED Family [#{gid}]")
+  else
+    UI.message("GROUP_PRESENT Family [#{gid}]")
+  end
   tester = Spaceship::ConnectAPI::BetaTester.all(filter: { email: email }).first
-  UI.user_error!("#{email} is not a user on this account") unless tester
+  UI.user_error!("#{email} is not a tester on this account") unless tester
   begin
-    g.add_beta_testers(beta_tester_ids: [tester.id])
+    c.post("v1/betaGroups/#{gid}/relationships/betaTesters",
+           { data: [{ type: "betaTesters", id: tester.id }] })
     UI.success("ADDED #{email}")
   rescue => e
-    UI.message("add note: #{e.message[0, 120]}")
+    UI.message("add note: #{e.message[0, 160]}")
   end
 end
 
