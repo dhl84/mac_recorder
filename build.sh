@@ -22,9 +22,15 @@ if [ ! -f "$VAD" ]; then
   curl -fsSL -o "$VAD" https://huggingface.co/ggml-org/whisper-vad/resolve/main/ggml-silero-v5.1.2.bin
 fi
 
-# An ad-hoc signature is enough for the permission records to survive a restart,
-# while the bundle stays at the same path.
-codesign --force --sign - --identifier com.davidlee.InterviewRecorder "$APP"
+# macOS ties the screen and audio permission to the signature. An ad-hoc
+# signature changes with each build, so a rebuild silently loses the permission
+# while System Settings still shows it on. A certificate keeps it stable.
+SIGN_ID="${SIGN_ID:-$(security find-identity -v -p codesigning | awk -F'"' '/Apple Development/ {print $2; exit}')}"
+if [ -z "$SIGN_ID" ]; then
+  echo "No Apple Development certificate: ad-hoc signing. Grant the permission again after each build."
+  SIGN_ID="-"
+fi
+codesign --force --sign "$SIGN_ID" --identifier com.davidlee.InterviewRecorder "$APP"
 
 echo "Built $PWD/$APP"
 echo "Run it with: open '$PWD/$APP'"
