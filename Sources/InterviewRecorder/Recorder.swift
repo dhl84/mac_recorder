@@ -10,9 +10,21 @@ final class Track {
     private let file: AVAudioFile
     private let target: AVAudioFormat
     private var converter: AVAudioConverter?
+    private let started: Date
+    private var written: AVAudioFramePosition = 0
+    private let lock = NSLock()
+    private var lastBuffer = Date.distantPast
+    private var lastLevel: Float = 0
 
-    init(url: URL) throws {
+    /// When the last buffer arrived and how loud it was (0 to 1), for the live display.
+    var health: (last: Date, level: Float) {
+        lock.lock(); defer { lock.unlock() }
+        return (lastBuffer, lastLevel)
+    }
+
+    init(url: URL, started: Date = Date()) throws {
         self.url = url
+        self.started = started
         target = AVAudioFormat(commonFormat: .pcmFormatFloat32,
                                sampleRate: 16_000, channels: 1, interleaved: false)!
         file = try AVAudioFile(forWriting: url, settings: [
@@ -43,7 +55,33 @@ final class Track {
             status.pointee = .haveData
             return input
         }
-        if err == nil && out.frameLength > 0 { try? file.write(from: out) }
+        guard err == nil, out.frameLength > 0 else { return }
+        let samples = UnsafeBufferPointer(start: out.floatChannelData![0], count: Int(out.frameLength))
+        let rms = sqrt(samples.reduce(0) { $0 + $1 * $1 } / Float(samples.count))
+        // ponytail: a 60 dB window is enough to tell speech from silence.
+        let level = max(0, min(1, (20 * log10(max(rms, 1e-6)) + 60) / 60))
+        lock.lock(); lastBuffer = Date(); lastLevel = level; lock.unlock()
+        padToClock(before: out.frameLength)
+        try? file.write(from: out)
+        written += AVAudioFramePosition(out.frameLength)
+    }
+
+    /// A gap (a device change, a capture restart) gives no samples. Silence fills
+    /// it, so both tracks keep the wall clock and the transcript keeps the turn order.
+    private func padToClock(before frames: AVAudioFrameCount) {
+        let due = AVAudioFramePosition(Date().timeIntervalSince(started) * target.sampleRate)
+            - AVAudioFramePosition(frames)
+        var missing = due - written
+        guard missing > AVAudioFramePosition(target.sampleRate / 2) else { return }
+        while missing > 0 {
+            let count = AVAudioFrameCount(min(missing, 16_000))
+            guard let silence = AVAudioPCMBuffer(pcmFormat: target, frameCapacity: count) else { return }
+            silence.frameLength = count
+            memset(silence.floatChannelData![0], 0, Int(count) * MemoryLayout<Float>.size)
+            try? file.write(from: silence)
+            written += AVAudioFramePosition(count)
+            missing -= AVAudioFramePosition(count)
+        }
     }
 }
 
@@ -58,6 +96,12 @@ final class Recorder: NSObject, ObservableObject, SCStreamOutput, SCStreamDelega
     @Published private(set) var running = false
     @Published private(set) var elapsed: TimeInterval = 0
     @Published var status = ""
+    /// A track is live while its buffers keep arriving. A dead track is the failure
+    /// that ended a real call's recording while the clock kept running.
+    @Published private(set) var micLive = false
+    @Published private(set) var sysLive = false
+    @Published private(set) var micLevel: Float = 0
+    @Published private(set) var sysLevel: Float = 0
 
     private let engine = AVAudioEngine()
     private var stream: SCStream?
@@ -68,6 +112,7 @@ final class Recorder: NSObject, ObservableObject, SCStreamOutput, SCStreamDelega
     private var folder: URL?
     private var label = ""
     private let queue = DispatchQueue(label: "recorder.audio")
+    private var deviceObserver: NSObjectProtocol?
 
     // MARK: start
 
@@ -83,21 +128,16 @@ final class Recorder: NSObject, ObservableObject, SCStreamOutput, SCStreamDelega
             let dir = Store.root.appendingPathComponent(Store.folderName(label: label, date: Date()))
             try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
             folder = dir
-            let micTrack = try Track(url: dir.appendingPathComponent("mic.wav"))
-            let sysTrack = try Track(url: dir.appendingPathComponent("system.wav"))
-            mic = micTrack
-            sys = sysTrack
+            let now = Date()
+            mic = try Track(url: dir.appendingPathComponent("mic.wav"), started: now)
+            sys = try Track(url: dir.appendingPathComponent("system.wav"), started: now)
 
-            let input = engine.inputNode
-            let format = input.inputFormat(forBus: 0)
-            guard format.sampleRate > 0 else {
-                return say("The input device reports no sample rate. Select a microphone in Sound settings.")
-            }
-            input.installTap(onBus: 0, bufferSize: 4_096, format: format) { buffer, _ in
-                micTrack.write(buffer)
-            }
-            engine.prepare()
-            try engine.start()
+            try startMic()
+            // A headset that joins a call switches profile, and the engine stops
+            // with no error. Without this the microphone track ends at that moment.
+            deviceObserver = NotificationCenter.default.addObserver(
+                forName: .AVAudioEngineConfigurationChange, object: engine, queue: .main
+            ) { [weak self] _ in self?.restartMic() }
 
             try await startSystemAudio()
 
@@ -105,13 +145,45 @@ final class Recorder: NSObject, ObservableObject, SCStreamOutput, SCStreamDelega
             elapsed = 0
             running = true
             say("Recording. The microphone and the system output both write to \(dir.lastPathComponent).")
-            timer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
-                guard let self else { return }
-                DispatchQueue.main.async { self.elapsed = Date().timeIntervalSince(self.started) }
-            }
+            // start() runs off the main thread, where a scheduled timer never fires.
+            // The main run loop in common mode also ticks while a menu is open.
+            let clock = Timer(timeInterval: 0.5, repeats: true) { [weak self] _ in self?.tick() }
+            RunLoop.main.add(clock, forMode: .common)
+            timer = clock
         } catch {
             await stop()
             say("Start failed: \(error.localizedDescription)")
+        }
+    }
+
+    private func startMic() throws {
+        guard let micTrack = mic else { return }
+        let input = engine.inputNode
+        let format = input.inputFormat(forBus: 0)
+        guard format.sampleRate > 0 else {
+            throw NSError(domain: "InterviewRecorder", code: 1, userInfo: [NSLocalizedDescriptionKey:
+                "The input device reports no sample rate. Select a microphone in Sound settings."])
+        }
+        input.removeTap(onBus: 0)
+        input.installTap(onBus: 0, bufferSize: 4_096, format: format) { buffer, _ in
+            micTrack.write(buffer)
+        }
+        engine.prepare()
+        try engine.start()
+    }
+
+    /// The new device can need a moment, so a failed restart tries again.
+    private func restartMic(attempt: Int = 1) {
+        guard running else { return }
+        engine.stop()
+        do {
+            try startMic()
+            say("The audio device changed. The microphone recording continues.")
+        } catch {
+            guard attempt < 10 else {
+                return say("The microphone stopped after a device change: \(error.localizedDescription). Stop and start again.")
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1) { self.restartMic(attempt: attempt + 1) }
         }
     }
 
@@ -143,12 +215,31 @@ final class Recorder: NSObject, ObservableObject, SCStreamOutput, SCStreamDelega
         stream = s
     }
 
+    /// Fake live state for `--snapshot --recording`, so the layout can be checked
+    /// without a real recording.
+    func preview() {
+        running = true
+        elapsed = 754
+        micLive = true
+        micLevel = 0.6
+        sysLive = false
+    }
+
+    private func tick() {
+        elapsed = Date().timeIntervalSince(started)
+        let now = Date()
+        if let m = mic?.health { micLive = now.timeIntervalSince(m.last) < 3; micLevel = micLive ? m.level : 0 }
+        if let s = sys?.health { sysLive = now.timeIntervalSince(s.last) < 3; sysLevel = sysLive ? s.level : 0 }
+    }
+
     // MARK: stop
 
     @discardableResult
     func stop() async -> URL? {
         timer?.invalidate()
         timer = nil
+        if let deviceObserver { NotificationCenter.default.removeObserver(deviceObserver) }
+        deviceObserver = nil
         if engine.isRunning || engine.inputNode.numberOfInputs > 0 {
             engine.inputNode.removeTap(onBus: 0)
         }
@@ -160,6 +251,10 @@ final class Recorder: NSObject, ObservableObject, SCStreamOutput, SCStreamDelega
         let seconds = running ? Date().timeIntervalSince(started) : 0
         running = false
         elapsed = 0
+        micLive = false
+        sysLive = false
+        micLevel = 0
+        sysLevel = 0
         mic = nil
         sys = nil
         guard let dir = folder else { return nil }
@@ -183,9 +278,25 @@ final class Recorder: NSObject, ObservableObject, SCStreamOutput, SCStreamDelega
         }
     }
 
+    /// The capture stops when the display sleeps or changes. It restarts while
+    /// the recording runs, so a locked screen does not end the other side's track.
     func stream(_ stream: SCStream, didStopWithError error: Error) {
         DispatchQueue.main.async {
-            self.status = "The system audio capture stopped: \(error.localizedDescription)"
+            guard self.running, self.stream === stream else { return }
+            self.stream = nil
+            self.say("The system audio capture stopped: \(error.localizedDescription). Restarting it.")
+            Task { await self.restartSystemAudio() }
+        }
+    }
+
+    private func restartSystemAudio() async {
+        while running && stream == nil {
+            do {
+                try await startSystemAudio()
+                say("The system audio capture restarted. The recording continues.")
+            } catch {
+                try? await Task.sleep(nanoseconds: 3_000_000_000)
+            }
         }
     }
 

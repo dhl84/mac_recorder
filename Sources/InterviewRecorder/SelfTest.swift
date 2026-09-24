@@ -1,4 +1,6 @@
-import Foundation
+import AVFoundation
+import AppKit
+import ScreenCaptureKit
 
 /// One runnable check for the parts that can break quietly: the SRT parser, the
 /// turn merge and the folder names. Run it with:
@@ -108,7 +110,80 @@ enum SelfTest {
             try? fm.removeItem(at: box)
         }
 
+        // A track that gets its first buffer 3 seconds late must hold 3 seconds of
+        // silence before it, or the two tracks lose their common clock.
+        let wav = FileManager.default.temporaryDirectory.appendingPathComponent("ir-pad-\(UUID().uuidString).wav")
+        do {
+            let format = AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 1)!
+            let tenth = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 4_800)!
+            tenth.frameLength = 4_800
+            do {
+                let track = try Track(url: wav, started: Date().addingTimeInterval(-3))
+                track.write(tenth)
+            }
+            let seconds = Double(try AVAudioFile(forReading: wav).length) / 16_000
+            check(abs(seconds - 3.0) < 0.2, "a late track must pad to the clock, got \(seconds) s")
+        } catch {
+            check(false, "the padding check threw: \(error.localizedDescription)")
+        }
+        try? FileManager.default.removeItem(at: wav)
+
+        // Playback must run both tracks and report its place. The files hold silence,
+        // so the check plays nothing that you can hear.
+        let box = FileManager.default.temporaryDirectory.appendingPathComponent("ir-play-\(UUID().uuidString)")
+        try? FileManager.default.createDirectory(at: box, withIntermediateDirectories: true)
+        do {
+            let format = AVAudioFormat(standardFormatWithSampleRate: 16_000, channels: 1)!
+            let blip = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 160)!
+            blip.frameLength = 160
+            for name in ["mic.wav", "system.wav"] {
+                try Track(url: box.appendingPathComponent(name), started: Date().addingTimeInterval(-2)).write(blip)
+            }
+            let player = Player()
+            player.load(Session(url: box, label: "x", date: Date(), duration: 2))
+            check(abs(player.length - 2) < 0.2, "playback length wrong: \(player.length)")
+            player.play()
+            RunLoop.main.run(until: Date().addingTimeInterval(0.8))
+            check(player.playing && player.position > 0.4, "playback did not move: \(player.position)")
+            player.pause()
+            check(!player.playing, "pause did not stop playback")
+        } catch {
+            check(false, "the playback check threw: \(error.localizedDescription)")
+        }
+        try? FileManager.default.removeItem(at: box)
+
         print("self-test passed")
         exit(0)
+    }
+}
+
+/// Saves a PNG of the app's own window and quits. It uses the app's own screen
+/// recording permission, so start it with `open -n` to make the app responsible:
+///     open -n "Interview Recorder.app" --args --snapshot /abs/out.png [--recording]
+enum Snapshot {
+    static func takeIfAsked(_ recorder: Recorder) {
+        let args = CommandLine.arguments
+        guard let flag = args.firstIndex(of: "--snapshot"), flag + 1 < args.count else { return }
+        if args.contains("--recording") { recorder.preview() }
+        Task {
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            do {
+                let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
+                guard let window = content.windows.first(where: {
+                    $0.owningApplication?.processID == getpid() && $0.frame.width > 300
+                }) else { exit(2) }
+                let config = SCStreamConfiguration()
+                config.width = Int(window.frame.width * 2)
+                config.height = Int(window.frame.height * 2)
+                let image = try await SCScreenshotManager.captureImage(
+                    contentFilter: SCContentFilter(desktopIndependentWindow: window), configuration: config)
+                try NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:])?
+                    .write(to: URL(fileURLWithPath: args[flag + 1]))
+                exit(0)
+            } catch {
+                FileHandle.standardError.write(Data("snapshot failed: \(error.localizedDescription)\n".utf8))
+                exit(1)
+            }
+        }
     }
 }

@@ -134,21 +134,33 @@ final class Library: ObservableObject {
 }
 
 struct ContentView: View {
-    @StateObject private var recorder = Recorder()
+    @ObservedObject var recorder: Recorder
     @StateObject private var library = Library()
+    @StateObject private var player = Player()
     @State private var label = ""
     @State private var datasetFolder = ""
     @State private var pane: Pane = .brief
 
     var body: some View {
-        NavigationSplitView {
-            list
-        } detail: {
-            detail
+        // The banner sits above the split view, not in its safe area: the sidebar
+        // floats to the top of the window and would draw under an inset.
+        VStack(spacing: 0) {
+            RecordingBanner(recorder: recorder)
+            NavigationSplitView {
+                list
+            } detail: {
+                detail
+            }
         }
-        .toolbar { ToolbarItem(placement: .principal) { recordBar } }
+        .toolbar { recordBar }
         .frame(minWidth: 940, minHeight: 560)
-        .onAppear { library.reload() }
+        .onAppear {
+            library.reload()
+            if CommandLine.arguments.contains("--snapshot") { library.selected = library.shown.first }
+        }
+        // Stop playback before a recording starts, so it does not play into the call.
+        .onChange(of: recorder.running) { _, running in if running { player.pause() } }
+        .onChange(of: recorder.running) { _, running in if !running { library.reload() } }
         .alert("Split this recording?", isPresented: $library.askSplit) {
             Button("Split") { if let s = library.selected { library.applySplit(s) } }
             Button("Cancel", role: .cancel) {}
@@ -158,13 +170,19 @@ struct ContentView: View {
         }
     }
 
-    private var recordBar: some View {
-        HStack(spacing: 10) {
-            TextField("Company and role, or leave it empty", text: $label)
-                .textFieldStyle(.roundedBorder)
-                .frame(width: 260)
-                .disabled(recorder.running)
-            Button(recorder.running ? "Stop" : "Record") {
+    /// Two toolbar items, not one: macOS 26 draws one item as one glass capsule,
+    /// and a red button then colours the name field red as well.
+    @ToolbarContentBuilder
+    private var recordBar: some ToolbarContent {
+        ToolbarItem(placement: .principal) {
+            if !recorder.running {
+                TextField("Company and role, or leave it empty", text: $label)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 260)
+            }
+        }
+        ToolbarItem(placement: .primaryAction) {
+            Button(recorder.running ? "Stop recording" : "Start recording") {
                 Task {
                     if recorder.running {
                         await recorder.stop()
@@ -177,10 +195,26 @@ struct ContentView: View {
             }
             .keyboardShortcut("r")
             .tint(recorder.running ? .red : .accentColor)
-            if recorder.running {
-                Circle().fill(.red).frame(width: 9, height: 9)
-                Text(Store.clock(recorder.elapsed)).monospacedDigit()
+            .buttonStyle(.borderedProminent)
+        }
+    }
+
+    /// Both sides of the call play together from the same point.
+    private var playback: some View {
+        HStack(spacing: 10) {
+            Button { player.toggle() } label: {
+                Image(systemName: player.playing ? "pause.fill" : "play.fill")
+                    .frame(width: 16)
             }
+            .disabled(player.length == 0)
+            Slider(value: $player.position, in: 0...max(player.length, 1)) { editing in
+                player.scrub(editing: editing)
+            }
+            .disabled(player.length == 0)
+            Text("\(Store.clock(player.position)) / \(Store.clock(player.length))")
+                .font(.callout.monospacedDigit())
+                .foregroundStyle(.secondary)
+                .fixedSize()
         }
     }
 
@@ -222,6 +256,8 @@ struct ContentView: View {
                 Text("\(session.date.formatted()) · \(Store.clock(session.duration)) · \(String(format: "%.1f", session.sizeMB)) MB")
                     .font(.callout)
                     .foregroundStyle(.secondary)
+
+                playback
 
                 HStack {
                     Button(session.hasTranscript ? "Transcribe again" : "Transcribe") {
@@ -287,12 +323,13 @@ struct ContentView: View {
                     .foregroundStyle(.secondary)
             }
             .padding()
-            .onChange(of: library.selected) { _, new in
+            .onChange(of: library.selected, initial: true) { _, new in
                 datasetFolder = Store.slug(new?.label ?? "")
+                player.load(new)
             }
         } else {
             VStack(spacing: 8) {
-                Text("Name the call, then press Record.").font(.title3)
+                Text("Name the call, then press Start recording.").font(.title3)
                 Text(recorder.status.isEmpty
                      ? "Leave the name empty and the model writes one from the transcript. If you stay on the line into a second call, press Split calls afterwards."
                      : recorder.status)
@@ -328,14 +365,84 @@ struct ContentView: View {
     }
 }
 
+/// A full-width bar at the top of the window: red with the clock and a meter for
+/// each track while recording, grey when stopped. Each track shows its own state,
+/// because one track can die while the other runs.
+struct RecordingBanner: View {
+    @ObservedObject var recorder: Recorder
+
+    var body: some View {
+        HStack(spacing: 16) {
+            Image(systemName: recorder.running ? "record.circle.fill" : "stop.circle")
+                .font(.title2)
+            Text(recorder.running ? "RECORDING  \(Store.clock(recorder.elapsed))" : "NOT RECORDING")
+                .font(.headline.monospacedDigit())
+            if recorder.running {
+                meter("Your microphone", live: recorder.micLive, level: recorder.micLevel)
+                meter("Other side", live: recorder.sysLive, level: recorder.sysLevel)
+            } else {
+                Text("Nothing is captured until you press Start recording.")
+                    .font(.callout)
+            }
+            Spacer()
+        }
+        .foregroundStyle(recorder.running ? .white : .primary)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
+        .background(recorder.running ? Color.red : Color.gray.opacity(0.2))
+    }
+
+    private func meter(_ name: String, live: Bool, level: Float) -> some View {
+        HStack(spacing: 6) {
+            Text(name).font(.callout)
+            if live {
+                ProgressView(value: Double(level))
+                    .tint(.white)
+                    .frame(width: 70)
+            } else {
+                Text("NO SIGNAL")
+                    .font(.callout.bold())
+                    .padding(.horizontal, 6)
+                    .background(Color.yellow, in: RoundedRectangle(cornerRadius: 4))
+                    .foregroundStyle(.black)
+            }
+        }
+    }
+}
+
 @main
 struct InterviewRecorderApp: App {
+    @StateObject private var recorder = Recorder()
+
     init() { SelfTest.runIfAsked() }
 
     var body: some Scene {
         WindowGroup("Interview Recorder") {
-            ContentView()
+            ContentView(recorder: recorder)
+                .onAppear { Snapshot.takeIfAsked(recorder) }
         }
         .windowToolbarStyle(.unified)
+
+        // The call app covers the window, so the menu bar shows the state as well.
+        MenuBarExtra {
+            Text(recorder.running ? "Recording \(Store.clock(recorder.elapsed))" : "Not recording")
+            if recorder.running {
+                Text("Microphone: \(recorder.micLive ? "live" : "NO SIGNAL")")
+                Text("Other side: \(recorder.sysLive ? "live" : "NO SIGNAL")")
+            }
+            Divider()
+            Button(recorder.running ? "Stop recording" : "Start recording") {
+                Task {
+                    if recorder.running { await recorder.stop() } else { await recorder.start(label: "") }
+                }
+            }
+        } label: {
+            if recorder.running {
+                Label("REC \(Store.clock(recorder.elapsed))", systemImage: "record.circle.fill")
+                    .labelStyle(.titleAndIcon)
+            } else {
+                Image(systemName: "stop.circle")
+            }
+        }
     }
 }
