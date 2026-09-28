@@ -23,6 +23,28 @@ MODEL = os.environ.get("INTERVIEW_MODEL", "gemma4:26b-a4b-it-qat")
 CHUNK_WORDS = int(os.environ.get("INTERVIEW_CHUNK_WORDS", 3500))
 GENERIC = {"", "interview", "untitled", "recording"}
 
+
+def me_name():
+    """Who "Me" is. The transcript labels the microphone track "Me" and gives no
+    name, so the model binds any name that falls near the recorder to them. On
+    28 September 2026 whisper heard "walk through" as "james" and the brief
+    renamed the recorder James throughout. The name comes from the machine now,
+    never from the transcript."""
+    name = os.environ.get("INTERVIEW_ME", "").strip()
+    if name:
+        return name
+    try:
+        import pwd
+        full = pwd.getpwuid(os.getuid()).pw_gecos.split(",")[0].strip()
+        if full:
+            return full
+    except Exception:
+        pass
+    return "Me"
+
+
+ME = me_name()
+
 STYLE = """Write in Simple Technical English:
 - One idea per sentence. 25 words maximum.
 - Active voice. Name the actor.
@@ -38,6 +60,7 @@ Rules:
 - Between 5 and 12 words.
 - Name the group or the organisation, and name the subject of the call.
 - Name the people only when the transcript says who they are.
+- The person who made the recording is {me}. Never give them another name.
 - Write the subject, not the tone. "Board: pay review and payroll cut-off",
   not "A positive discussion".
 - No date, no quotation marks, no full stop, no prefix such as "Title:".
@@ -53,8 +76,10 @@ BRIEF = """You read the transcript of one call. Write a brief for a reader who w
 
 {style}
 
-"Me" is the person who made the recording. "Them" is every other speaker, on one
-track, so two of them can appear in one block. Use the names the transcript gives.
+"{me}" is the person who made the recording. "Them" is every other speaker, on one
+track, so two of them can appear in one block. Use the names the transcript gives
+for the other speakers only. Never call "{me}" by another name, whatever the
+transcript says, because a mis-heard word can look like a name.
 Use only what the transcript says. Never copy words from these instructions into the
 brief. If the transcript gives nothing for a section, write "- none" under it.
 
@@ -214,7 +239,11 @@ def speech(folder):
     transcript = folder / "transcript.md"
     if not transcript.exists():
         sys.exit(f"No transcript.md in {folder}. Transcribe the call first.")
-    return transcript.read_text(encoding="utf-8").split("\n## ", 1)[-1]
+    body = transcript.read_text(encoding="utf-8").split("\n## ", 1)[-1]
+    # The model sees the recorder's real name on their own blocks, so no name in
+    # the speech can take that slot. transcript.md on disk stays unchanged.
+    return re.sub(r"^(#*\s*\d\d:\d\d:\d\d) Me\s*$", lambda m: m.group(1) + " " + ME,
+                  body, flags=re.M)
 
 
 def title(folder, force=False):
@@ -224,7 +253,7 @@ def title(folder, force=False):
     if not force and label.lower() not in GENERIC:
         return label
     print("  asking for a title...", file=sys.stderr)
-    new = ask(TITLE.format(transcript=chunks(speech(folder))[0]))
+    new = ask(TITLE.format(me=ME, transcript=chunks(speech(folder))[0]))
     new = new.strip().strip('"').strip("'").rstrip(".").split("\n")[0]
     new = re.sub(r"^(title|call)\s*:\s*", "", new, flags=re.I).strip()
     if not 2 <= len(new.split()) <= 20:
@@ -251,7 +280,7 @@ def brief(folder, force_title=False):
     briefs = []
     for i, part in enumerate(parts, 1):
         print(f"  part {i} of {len(parts)}...", file=sys.stderr)
-        briefs.append(ask(BRIEF.format(style=STYLE, title=label or folder.name, transcript=part)))
+        briefs.append(ask(BRIEF.format(style=STYLE, me=ME, title=label or folder.name, transcript=part)))
     if len(briefs) == 1:
         out = briefs[0]
     else:
@@ -407,6 +436,28 @@ The call settled an issue with a project.
     assert failure("- [00:04] The price is agreed at 40 pounds", real, 30) is None
     assert failure("- [Sarah] Send the contract, by Friday", real, 30) is None
     assert too_short(6).count("- none") == 6
+
+    # The recorder keeps their own name. A mis-heard word once put "james" next
+    # to the recorder and the brief renamed them throughout.
+    import tempfile
+    global ME
+    keep, ME = ME, "David Lee"
+    try:
+        with tempfile.TemporaryDirectory() as d:
+            folder = Path(d)
+            (folder / "transcript.md").write_text(
+                "# Interview\n\nRecorded.\n\n## 00:00:01 Them\n\n"
+                "morning david also walk through your cv james\n\n"
+                "## 00:00:05 Me\n\nMorning Daniel.\n", encoding="utf-8")
+            body = speech(folder)
+        assert "00:00:05 David Lee" in body, body
+        assert "00:00:05 Me" not in body, body
+        assert "00:00:01 Them" in body, body
+        assert "james" in body, "the speech text must survive untouched"
+        assert "David Lee" in TITLE.format(me=ME, transcript="x")
+        assert "David Lee" in BRIEF.format(style="s", me=ME, title="t", transcript="x")
+    finally:
+        ME = keep
     print("callbrief self-test passed")
 
 
@@ -432,3 +483,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
