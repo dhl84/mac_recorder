@@ -112,7 +112,6 @@ brief together.
 | Dataset | `~/Documents/InterviewDataset/` | `INTERVIEW_DATASET` |
 | App icon | `Resources/AppIcon.icns`, drawn by `make_icon.sh` | |
 | Whisper model | `ggml-large-v3-turbo.bin` from OpenSuperWhisper | `INTERVIEW_WHISPER_MODEL` |
-| Voice activity model | `~/.cache/whisper-vad/ggml-silero-v5.1.2.bin` | `INTERVIEW_VAD_MODEL` |
 | Ollama model | `gemma4:26b-a4b-it-qat` | `INTERVIEW_MODEL` |
 
 Each recording folder holds `mic.wav`, `system.wav`, `meta.json` and, after the
@@ -135,17 +134,41 @@ notes for that role.
 Recordings stay outside the code repositories. A call is private, and a
 repository is not the place for it.
 
-## Voice activity detection
+## Invented text, and why the voice activity model went
 
-`build.sh` downloads a 0.9 MB silero model to `~/.cache/whisper-vad/`. Without it
 whisper invents speech in the quiet parts of a call. The first real recording gave
 "Thank you." 14 times over the gaps where nobody spoke. `--suppress-nst` made it
-worse, with 19 repeats of a different phrase. The voice activity model removed
-every invented segment and cut the run from 11 seconds to 4 seconds, because the
-decoder skips the silence.
+worse, with 19 repeats of a different phrase.
 
-The cost is a coarser timestamp. The model joins the speech across a removed
-silence, so a segment can span a minute. The start of each segment stays correct.
+whisper.cpp offers `--vad` with a silero model, and the app used it until
+29 September 2026. It does remove the invented text. It also moves the timestamps,
+because it cuts the silence out, transcribes the join, then maps the times back.
+A segment then stretches across the gap between two turns. On the call of
+29 September one segment covered 171 seconds and held a few words.
+
+The merge sorts the two tracks by time. The speakers came out in the wrong order,
+and one sentence broke in half across the reply of the other person.
+
+The app now runs whisper with no VAD and removes the invented text itself. Three
+parts do that work:
+
+1. `-mc 0` keeps no decoded text as the prompt for the next window. Carried text is
+   what holds whisper in a repetition loop. The system track of that call gave
+   "So, the third billion dollar company was in 1901." 72 times across two minutes.
+   With `-mc 0` the worst loop fell to 15.
+2. A loudness gate drops a segment whose loudest fifth of a second stays under 150
+   RMS. Real turns on that call measured 2,700 and above, and invented ones under
+   200. The gate removed 155 segments from the system track.
+3. A repeat test drops a line of five words or more that comes straight after the
+   same line. This catches the tail of a loop that sits over real sound. A short
+   line is exempt, because "Yeah." and "Okay." repeat in every real call.
+
+Measured on that call, the system track went from 136 segments to 253. The text
+density rose from 5.5 to 10.7 characters for each second of span. The transcript went
+from 84 turns to about 340, which is what a conversation looks like.
+
+This costs time. The decoder no longer skips the silence, so a 40 minute call takes
+about two minutes for both tracks instead of about 40 seconds.
 
 ## The icon
 

@@ -59,6 +59,63 @@ enum SelfTest {
                "a two-row block must join with a space: \(lines[1].text)")
         check(lines[0].speaker == "Them")
 
+        check(lines[0].end == 3.5, "the end of a block must parse: \(lines[0].end)")
+
+        // The loudness gate. A WAV of one loud second then one silent second must keep
+        // the segment over the sound and drop the segment over the silence, which is
+        // where whisper invents text.
+        let rate = 16_000
+        var gatePCM = Data()
+        for i in 0..<(rate * 2) {
+            let loud = i < rate
+            let value = Int16(loud ? 6_000.0 * sin(Double(i) * 0.2) : 0)
+            withUnsafeBytes(of: value.littleEndian) { gatePCM.append(contentsOf: $0) }
+        }
+        var gateWAV = Data("RIFF".utf8)
+        withUnsafeBytes(of: UInt32(36 + gatePCM.count).littleEndian) { gateWAV.append(contentsOf: $0) }
+        gateWAV.append(contentsOf: Array("WAVEfmt ".utf8))
+        for value: UInt32 in [16] { withUnsafeBytes(of: value.littleEndian) { gateWAV.append(contentsOf: $0) } }
+        for value: UInt16 in [1, 1] { withUnsafeBytes(of: value.littleEndian) { gateWAV.append(contentsOf: $0) } }
+        for value: UInt32 in [UInt32(rate), UInt32(rate * 2)] {
+            withUnsafeBytes(of: value.littleEndian) { gateWAV.append(contentsOf: $0) }
+        }
+        for value: UInt16 in [2, 16] { withUnsafeBytes(of: value.littleEndian) { gateWAV.append(contentsOf: $0) } }
+        gateWAV.append(contentsOf: Array("data".utf8))
+        withUnsafeBytes(of: UInt32(gatePCM.count).littleEndian) { gateWAV.append(contentsOf: $0) }
+        gateWAV.append(gatePCM)
+        let wavURL = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("selftest-gate.wav")
+        try? gateWAV.write(to: wavURL)
+        let track = Transcribe.Track(wavURL)
+        check(track != nil, "the self-test WAV must parse")
+        check((track?.peak(from: 0, to: 0.9) ?? 0) > Transcribe.Track.floor,
+               "the loud second must pass the gate")
+        check((track?.peak(from: 1.1, to: 1.9) ?? 999) < Transcribe.Track.floor,
+               "the silent second must fail the gate")
+        let gated = Transcribe.gate([
+            Transcribe.Line(start: 0, end: 0.9, speaker: "Me", text: "Real speech."),
+            Transcribe.Line(start: 1.1, end: 1.9, speaker: "Me", text: "Thank you."),
+        ], wav: wavURL)
+        check(gated.count == 1 && gated[0].text == "Real speech.",
+               "the gate must keep the loud segment only, got \(gated.map(\.text))")
+        // A long line that repeats straight after itself is a loop, and only the first
+        // copy survives. A short line repeats in every real call, so it stays.
+        let looped = Transcribe.gate([
+            Transcribe.Line(start: 0, end: 0.3, speaker: "Them", text: "The third company was in 1901."),
+            Transcribe.Line(start: 0.3, end: 0.6, speaker: "Them", text: "The third company was in 1901."),
+            Transcribe.Line(start: 0.6, end: 0.9, speaker: "Them", text: "Yeah."),
+            Transcribe.Line(start: 0.9, end: 0.95, speaker: "Them", text: "Yeah."),
+        ], wav: wavURL)
+        check(looped.count == 3, "one repeat of a long line must go, got \(looped.map(\.text))")
+        check(looped.filter { $0.text == "Yeah." }.count == 2, "a short line must repeat freely")
+
+        // A track it cannot read must lose nothing.
+        let missing = URL(fileURLWithPath: "/tmp/not-a-wav-\(UUID().uuidString).wav")
+        check(Transcribe.gate([Transcribe.Line(start: 0, end: 1, speaker: "Me", text: "Keep.")],
+                              wav: missing).count == 1,
+               "an unreadable track must keep every segment")
+        try? FileManager.default.removeItem(at: wavURL)
+
         // A block without its index row still parses, because some SRT writers omit it.
         let bare = Transcribe.parse("00:00:10,000 --> 00:00:11,000\nYes.", speaker: "Me")
         check(bare.count == 1 && bare[0].start == 10.0, "a block with no index row must parse")

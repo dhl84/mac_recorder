@@ -202,6 +202,59 @@ def failure(line, transcript, duration):
     return None if hits / len(own) >= 0.5 else f"{hits} of {len(own)} words in the transcript"
 
 
+def reanchor(brief, transcript):
+    """Moves each timestamp to the block that actually holds the words.
+
+    The model writes a plausible timestamp, not a true one. On 29 September 2026 it
+    put "Sonnet 5.5 is eight times cheaper than Opus" at 00:24:41, where the other
+    speaker says only "Yeah." The timestamp is how David finds the moment in the
+    audio, so a near miss wastes his time. This picks the block that shares the most
+    words with the line, and leaves the timestamp alone when no block is a clear
+    match, because a wrong guess is worse than the model's own guess.
+    """
+    blocks = []
+    for match in re.finditer(r"^#*\s*(\d\d:\d\d:\d\d) \S.*$", transcript, flags=re.M):
+        start = match.end()
+        nxt = re.search(r"^#*\s*\d\d:\d\d:\d\d \S", transcript[start:], flags=re.M)
+        text = transcript[start:start + (nxt.start() if nxt else len(transcript))]
+        clock = match.group(1)
+        hh, mm, ss = (int(x) for x in clock.split(":"))
+        blocks.append((clock, hh * 3600 + mm * 60 + ss, {w[:5] for w in words(text)}))
+    if not blocks:
+        return brief
+
+    out = []
+    for line in brief.splitlines():
+        stamp = re.match(r"^(- )?\[(\d{1,2}):(\d{2})(?::(\d{2}))?\]\s*", line)
+        if not stamp:
+            out.append(line)
+            continue
+        own = words(line[stamp.end():])
+        if not own:
+            out.append(line)
+            continue
+        parts = [int(x) for x in stamp.groups()[1:] if x is not None]
+        guess = (parts[0] * 60 + parts[1] if len(parts) == 2
+                 else parts[0] * 3600 + parts[1] * 60 + parts[2])
+
+        def pick(window, floor):
+            best, score = None, 0.0
+            for clock, when, stems in blocks:
+                if window and abs(when - guess) > window:
+                    continue
+                hit = sum(1 for w in own if w[:5] in stems) / len(own)
+                if hit > score:
+                    best, score = clock, hit
+            return best if score >= floor else None
+
+        # Near the model's own guess a third of the words is enough, because the guess
+        # is usually right to about a minute. Far from it the bar is two thirds, so a
+        # chance overlap somewhere else in the call cannot move the line.
+        found = pick(120, 0.34) or pick(0, 0.67)
+        out.append(f"{stamp.group(1) or ''}[{found}] {line[stamp.end():]}" if found else line)
+    return "\n".join(out)
+
+
 def ground(brief, transcript, duration):
     """Keeps the headings, drops unsupported lines and repeats, and writes
     "- none" under a section that ends up empty."""
@@ -290,7 +343,8 @@ def brief(folder, force_title=False):
 
     head = (f"# {label or folder.name}\n\nBrief from {MODEL}. "
             "Every line below appears in the transcript.\n\n")
-    (folder / "brief.md").write_text(head + ground(out, body, duration) + "\n", encoding="utf-8")
+    (folder / "brief.md").write_text(
+        head + reanchor(ground(out, body, duration), body) + "\n", encoding="utf-8")
     print(str(folder / "brief.md"))
     return label
 
@@ -434,6 +488,19 @@ The call settled an issue with a project.
     assert failure("- 40: the salary", "the salary is agreed", 90).startswith("number 40")
     real = "We agreed the price at 40 pounds. Sarah will send the contract by Friday."
     assert failure("- [00:04] The price is agreed at 40 pounds", real, 30) is None
+
+    # reanchor moves a timestamp to the block that holds the words, and leaves a line
+    # alone when no block is a clear match.
+    spoken = ("00:00:05 Them\n\nTell me about the reconciliation of the ledger.\n\n"
+              "## 00:02:30 Me\n\nWe automated the safeguarding reconciliation.\n\n"
+              "## 00:09:10 Them\n\nYeah.\n")
+    moved = reanchor("- [00:07:00] We automated the safeguarding reconciliation.", spoken)
+    assert moved == "- [00:02:30] We automated the safeguarding reconciliation.", moved
+    first = reanchor("- [00:08:00] Tell me about the reconciliation of the ledger.", spoken)
+    assert first == "- [00:00:05] Tell me about the reconciliation of the ledger.", first
+    kept = reanchor("- [00:01:00] Nobody said any of these particular words here.", spoken)
+    assert kept == "- [00:01:00] Nobody said any of these particular words here.", kept
+    assert reanchor("## Key points", spoken) == "## Key points"
     assert failure("- [Sarah] Send the contract, by Friday", real, 30) is None
     assert too_short(6).count("- none") == 6
 
