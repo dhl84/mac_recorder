@@ -45,6 +45,19 @@ def me_name():
 
 ME = me_name()
 
+# Who asked the questions. On 28 September 2026 the brief of a talent screen said that
+# the recorder interviewed the interviewer, because the prompt said only who made the
+# recording. The role now comes from meta.json, INTERVIEW_ME_ROLE or the questions.
+ROLES = {"candidate", "interviewer"}
+ROLE_LINES = {
+    "candidate": ('"{me}" is the candidate in this interview. The other speaker interviewed '
+                  '"{me}". Never write that "{me}" interviewed anyone.'),
+    "interviewer": ('"{me}" is the interviewer in this call. "{me}" interviewed the other '
+                    'speaker. Never write that the other speaker interviewed "{me}".'),
+    "": ("Do not say who interviewed whom unless a speaker says it. The person who made "
+         "the recording can be the candidate."),
+}
+
 STYLE = """Write in Simple Technical English:
 - One idea per sentence. 25 words maximum.
 - Active voice. Name the actor.
@@ -77,7 +90,7 @@ BRIEF = """You read the transcript of one call. Write a brief for a reader who w
 {style}
 
 "{me}" is the person who made the recording. "Them" is every other speaker, on one
-track, so two of them can appear in one block. Use the names the transcript gives
+track, so two of them can appear in one block. {role} Use the names the transcript gives
 for the other speakers only. Never call "{me}" by another name, whatever the
 transcript says, because a mis-heard word can look like a name.
 Use only what the transcript says. Never copy words from these instructions into the
@@ -89,12 +102,15 @@ Output this Markdown structure and nothing else:
 One sentence: what this call settled or moved forward.
 
 ## Decisions
-One bullet for each thing the speakers agreed, as "- [mm:ss] what they agreed".
+One bullet for each thing the speakers agreed, as
+"- [mm:ss] what they agreed ("words copied from the transcript")".
 mm:ss is the time in the transcript heading above those words.
 
 ## Actions
-One bullet for each task someone took on, as "- [who] the task, by when".
-Write "unstated" when the transcript gives no date.
+One bullet for each task someone took on, as
+"- [who] the task, by when ("words copied from the transcript")".
+Write "unstated" when the transcript gives no date. A promise to follow up, such as a
+speaker saying they will be in touch, is an action for that speaker.
 
 ## Key points
 At most ten bullets, as "- [mm:ss] the point". Fewer is better than padding.
@@ -104,7 +120,13 @@ One line for each amount, date or name the transcript states, as
 "- value: what it measures". A bare number is wrong: name what it measures.
 
 ## Open questions
-At most four bullets. What the call left unsettled, or where a speaker guessed.
+At most four bullets, as "- [mm:ss] what is unsettled ("words copied from the transcript")".
+What the call left unsettled, or where a speaker guessed. A next step with no date or
+no name is unsettled.
+
+Each quote holds 3 to 12 words, copied exactly from the transcript, in straight double
+quotes. The quote shows where the transcript says it. Write the rest of the line in
+your own words.
 
 TRANSCRIPT ({title}):
 {transcript}"""
@@ -114,8 +136,9 @@ MERGE = """You have several briefs from consecutive parts of one call. Merge the
 {style}
 
 Use the same headings: The point, Decisions, Actions, Key points, Facts and numbers,
-Open questions. Keep the timestamps. Remove each repeated point. Keep the strongest 10
-bullets under Key points. Under Facts and numbers, keep the "value: what it measures" form.
+Open questions. Keep the timestamps and keep each quoted phrase exactly as it is.
+Remove each repeated point. Keep the strongest 10 bullets under Key points. Under Facts
+and numbers, keep the "value: what it measures" form. {role}
 
 PARTS:
 {parts}"""
@@ -174,8 +197,44 @@ def words(text):
             if len(w) >= 4 and w not in COMMON and not w.isdigit()]
 
 
+QUOTE = re.compile(r'["\u201c]([^"\u201d]{3,240})["\u201d]')
+
+
+def tokens(text):
+    """Lower-case words with the apostrophes taken out, so "we'll" matches "we'll"."""
+    return re.findall(r"[a-z0-9]+", text.lower().replace("'", "").replace("\u2019", ""))
+
+
+def said(quote, spoken):
+    """True when the quote is in the transcript. Whisper and the model differ in small
+    words, so 80% of the quote's words in order inside a window of the same length
+    plus three words is enough."""
+    want = tokens(quote)
+    if len(want) < 3:
+        return False
+    first = set(want[:2])
+    for i, word in enumerate(spoken):
+        if word not in first:
+            continue
+        window, at, found = spoken[i:i + len(want) + 3], 0, 0
+        for w in want:
+            try:
+                at = window.index(w, at) + 1
+                found += 1
+            except ValueError:
+                pass
+        if found / len(want) >= 0.8:
+            return True
+    return False
+
+
 def failure(line, transcript, duration):
-    """Returns why a bullet is not backed by the transcript, or None when it is."""
+    """Returns why a bullet is not backed by the transcript, or None when it is.
+
+    A bullet with a quote passes when the quote is in the transcript, so a correct
+    paraphrase around it survives. A bullet without a quote must share half its
+    words with the transcript. The paraphrase "the interviewer will contact the candidate" for "we'll be
+    in touch" shares too few words, and on 28 September 2026 that emptied the Actions."""
     body = line.strip()
     if body.startswith("- "):
         body = body[2:]
@@ -189,10 +248,19 @@ def failure(line, transcript, duration):
             return "timestamp past the end"
         body = body[stamp.end():]
     body = re.sub(r"^\[[^\]]*\]\s*", "", body)
-    said = set(re.findall(r"\d+", transcript))
-    stray = [n for n in re.findall(r"\d+", body) if n not in said]
+    quotes = QUOTE.findall(body)
+    if quotes:
+        spoken = tokens(transcript)
+        missing = [q for q in quotes if not said(q, spoken)]
+        if missing:
+            return f"quote not in the transcript: {missing[0][:40]}"
+        body = QUOTE.sub(" ", body)
+    numbers = set(re.findall(r"\d+", transcript))
+    stray = [n for n in re.findall(r"\d+", body) if n not in numbers]
     if stray:
         return f"number {stray[0]} not in the transcript"
+    if quotes:
+        return None
     own = words(body)
     if not own:
         return "no checkable words"
@@ -319,6 +387,50 @@ def title(folder, force=False):
     return new
 
 
+def questions(body):
+    """Question marks said by the recorder and by the other side."""
+    mine = theirs = 0
+    for block in re.split(r"^#*\s*\d\d:\d\d:\d\d ", body, flags=re.M)[1:]:
+        speaker, _, text = block.partition("\n")
+        if speaker.strip() == "Them":
+            theirs += text.count("?")
+        else:
+            mine += text.count("?")
+    return mine, theirs
+
+
+def me_role(folder, body):
+    """"candidate", "interviewer" or "" when the transcript does not show it.
+
+    meta.json "me_role" or INTERVIEW_ME_ROLE decides when set. Otherwise an interview
+    (the name says interview or screen) takes the role from the questions: the
+    interviewer asks at least twice as many as the other side."""
+    meta = read_meta(folder)
+    stated = (meta.get("me_role") or os.environ.get("INTERVIEW_ME_ROLE", "")).strip().lower()
+    if stated in ROLES:
+        return stated
+    name = f"{meta.get('label') or ''} {folder.name}".lower()
+    if not re.search(r"interview|screen", name):
+        return ""
+    mine, theirs = questions(body)
+    if theirs >= 3 and theirs >= 2 * mine:
+        return "candidate"
+    if mine >= 3 and mine >= 2 * theirs:
+        return "interviewer"
+    return ""
+
+
+def wrong_direction(text, role):
+    """The sentence under "The point", when it says the candidate interviewed someone."""
+    if role != "candidate":
+        return ""
+    first = re.escape(ME.split()[0]) if ME and ME != "Me" else "Me"
+    point = re.search(r"## The point\s*\n+(.+)", text)
+    line = point.group(1) if point else ""
+    pattern = rf"\b{first}\b(?:\s+\w+)?\s+(?:interviewed|interviews|is interviewing)\b(?!\s+(?:for|with|at)\b)"
+    return line if re.search(pattern, line, re.I) else ""
+
+
 def brief(folder, force_title=False):
     body = speech(folder)
     duration = float(read_meta(folder).get("duration") or 0)
@@ -329,17 +441,29 @@ def brief(folder, force_title=False):
         print(str(folder / "brief.md"))
         return label
     label = title(folder, force=force_title)
+    role = me_role(folder, body)
+    role_line = ROLE_LINES[role].format(me=ME)
+    print(f"  recorder's role: {role or 'not shown'}", file=sys.stderr)
     parts = chunks(body)
     briefs = []
     for i, part in enumerate(parts, 1):
         print(f"  part {i} of {len(parts)}...", file=sys.stderr)
-        briefs.append(ask(BRIEF.format(style=STYLE, me=ME, title=label or folder.name, transcript=part)))
+        briefs.append(ask(BRIEF.format(style=STYLE, me=ME, role=role_line,
+                                       title=label or folder.name, transcript=part)))
     if len(briefs) == 1:
         out = briefs[0]
     else:
         print("  merging...", file=sys.stderr)
         joined = "\n\n".join(f"--- PART {i + 1} ---\n{b}" for i, b in enumerate(briefs))
-        out = ask(MERGE.format(style=STYLE, parts=joined))
+        out = ask(MERGE.format(style=STYLE, role=role_line, parts=joined))
+    wrong = wrong_direction(out, role)
+    if wrong:
+        # One more try with the mistake named. A second failure drops the sentence.
+        print("  the point had the roles the wrong way round, asking again...", file=sys.stderr)
+        out = ask(f"{MERGE.format(style=STYLE, role=role_line, parts=out)}\n\n"
+                  f'This sentence has the roles the wrong way round: "{wrong}". Correct it.')
+        if wrong_direction(out, role):
+            out = re.sub(r"(## The point\s*\n+).+", r"\1- none", out, count=1)
 
     head = (f"# {label or folder.name}\n\nBrief from {MODEL}. "
             "Every line below appears in the transcript.\n\n")
@@ -522,7 +646,44 @@ The call settled an issue with a project.
         assert "00:00:01 Them" in body, body
         assert "james" in body, "the speech text must survive untouched"
         assert "David Lee" in TITLE.format(me=ME, transcript="x")
-        assert "David Lee" in BRIEF.format(style="s", me=ME, title="t", transcript="x")
+        assert "David Lee" in BRIEF.format(style="s", me=ME, role="r", title="t", transcript="x")
+
+        # The talent screen of 28 September 2026: the far end asked the questions, so
+        # the recorder is the candidate, and the brief must not say they interviewed.
+        screen = ("## 00:00:01 Them\n\nCan you walk me through your CV? What did you build at your last company?\n\n"
+                  "## 00:01:10 David Lee\n\nI was the second finance hire.\n\n"
+                  "## 00:05:00 Them\n\nHow did you forecast headcount? Any questions for me?\n\n"
+                  "## 00:37:40 Them\n\nI have another meeting now, but we'll be in touch.\n")
+        assert questions(screen) == (0, 4), questions(screen)
+        with tempfile.TemporaryDirectory() as d:
+            folder = Path(d) / "20260928-0855-interview"
+            folder.mkdir()
+            assert me_role(folder, screen) == "candidate"
+            assert me_role(folder, screen.replace("?", ".")) == ""
+            write_meta(folder, {"label": "", "me_role": "interviewer"})
+            assert me_role(folder, screen) == "interviewer", "meta.json decides"
+            other = Path(d) / "20260928-1000-board"
+            other.mkdir()
+            assert me_role(other, screen) == "", "a call that is not an interview has no role"
+        assert "candidate" in ROLE_LINES["candidate"].format(me=ME)
+        wrong = "## The point\n\nDavid Lee interviewed Sam Jones for the finance role.\n"
+        assert wrong_direction(wrong, "candidate").startswith("David Lee interviewed")
+        for right in ("Sam Jones interviewed David Lee for the finance role.",
+                      "David interviewed with Sam Jones for the finance role."):
+            assert not wrong_direction(f"## The point\n\n{right}\n", "candidate"), right
+        assert not wrong_direction(wrong, ""), "no role, no check"
+
+        # A paraphrased action survives when its quote is in the transcript.
+        action = '- [Them] Contact David about the next step, date unstated ("we\'ll be in touch")'
+        assert failure(action, screen, 2400) is None, failure(action, screen, 2400)
+        question = '- [37:40] No date for the next round ("I have another meeting now, but we\'ll be in touch")'
+        assert failure(question, screen, 2400) is None
+        invented_quote = '- [Them] Send an offer by Friday ("we will send you an offer on Friday")'
+        assert failure(invented_quote, screen, 2400).startswith("quote not in the transcript")
+        assert failure('- [Them] Contact David about the next step, date unstated', screen, 2400), \
+            "without a quote the old word test still applies"
+        assert failure('- [00:05] Them asked about 12 hires ("How did you forecast headcount")',
+                       screen, 2400).startswith("number 12"), "a number outside the quote still counts"
     finally:
         ME = keep
     print("callbrief self-test passed")

@@ -96,6 +96,24 @@ with these headings: The point, Decisions, Actions, Key points, Facts and
 numbers, Open questions. Each decision and each key point carries a timestamp.
 Each action names an owner and a date, or says "unstated".
 
+Each decision, action and open question ends with a quote of 3 to 12 words from
+the transcript. If the quote is in the transcript, the check keeps the line. A
+correct paraphrase around the quote therefore survives. A line without a quote must share
+half of its longer words with the transcript. A line with a quote that the
+transcript does not hold is removed.
+
+In an interview, the brief says who interviewed whom. The script takes the role of
+the person who made the recording from these sources, in this order:
+
+1. `"me_role": "candidate"` or `"me_role": "interviewer"` in `meta.json`.
+2. The `INTERVIEW_ME_ROLE` environment variable.
+3. The questions. If the call name contains "interview" or "screen", the side that
+   asks at least twice as many questions is the interviewer.
+
+If "The point" says that the candidate interviewed someone, the script asks the
+model once more. If the second answer has the same error, the script removes the
+sentence.
+
 The prompts and the model plumbing come from `ytsum.py`, the YouTube brief tool
 in the `ytsum` repository. The headings differ, because a call has decisions and
 actions and a video has none.
