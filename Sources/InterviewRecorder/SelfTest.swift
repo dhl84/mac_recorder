@@ -109,6 +109,57 @@ enum SelfTest {
         check(looped.count == 3, "one repeat of a long line must go, got \(looped.map(\.text))")
         check(looped.filter { $0.text == "Yeah." }.count == 2, "a short line must repeat freely")
 
+        // The speech regions. Hundredths of a second, padded by 0.2 s, and two pieces
+        // closer than 0.6 s join.
+        let found = Transcribe.regions("""
+        Speech segment 0: start = 61.00, end = 310.00
+        Speech segment 1: start = 350.00, end = 400.00
+        Speech segment 2: start = 1000.00, end = 1100.00
+        """)
+        check(found.count == 2, "two near pieces must join, got \(found)")
+        check(abs(found[0].start - 0.41) < 1e-9 && abs(found[0].end - 4.2) < 1e-9,
+               "the first region must run 0.41 to 4.2, got \(found[0])")
+        check(abs(found[1].start - 9.8) < 1e-9, "the second region must start at 9.8")
+        check(Transcribe.regions("Detected 0 speech segments:").isEmpty, "no speech, no region")
+
+        // Each word goes back to the time of its piece in the track. A word in a gap
+        // goes to the nearest piece. A pause of more than a second starts a new line.
+        let spans = [Transcribe.Span(joinedStart: 0, joinedEnd: 2, trackStart: 100),
+                     Transcribe.Span(joinedStart: 3.5, joinedEnd: 5, trackStart: 400)]
+        let placed = Transcribe.place([(0.1, "Tell"), (0.5, "me"), (1.5, "more."),
+                                       (2.2, "drifted"), (3.6, "Later"), (4.0, "words.")],
+                                      spans: spans, speaker: "Them")
+        check(placed.count == 2, "two pieces far apart must give two lines, got \(placed.map(\.text))")
+        check(abs(placed[0].start - 100.1) < 1e-9, "the first line must start at 100.1")
+        check(placed[0].text == "Tell me more. drifted", "a gap word must join the nearest piece")
+        check(abs(placed[1].start - 400.1) < 1e-9, "the second line must start at 400.1")
+        check(placed.allSatisfy { $0.end > $0.start }, "a line must last longer than nothing")
+        // A one-word reply from the region pass survives the gate, which a zero-length
+        // line did not: the loudness test found no sound in no time.
+        let reply = [Transcribe.Line(start: 5, end: 5.3, speaker: "Them", text: "Yep.")]
+        check(Transcribe.gate(reply, wav: URL(fileURLWithPath: "/tmp/none.wav"), loudness: false).count == 1,
+               "the region pass must keep a one-word reply")
+
+        // whisper's JSON: DTW times in hundredths, words built from tokens.
+        let json = #"{"transcription":[{"tokens":[{"text":"[_BEG_]","t_dtw":0,"offsets":{"from":0}},{"text":" Hel","t_dtw":120,"offsets":{"from":0}},{"text":"lo","t_dtw":130,"offsets":{"from":0}},{"text":" there.","t_dtw":-1,"offsets":{"from":2500}}]}]}"#
+        let parsed = Transcribe.words(json: Data(json.utf8))
+        check(parsed.map(\.text) == ["Hello", "there."], "tokens must join into words, got \(parsed)")
+        check(parsed.first?.at == 1.2 && parsed.last?.at == 2.5,
+               "a DTW time wins, and the offset stands in when none came")
+
+        check(Transcribe.dtwPreset("/m/ggml-large-v3-turbo.bin") == "large.v3.turbo", "the turbo preset")
+        check(Transcribe.dtwPreset("/m/ggml-base.en.bin") == "base.en", "the base.en preset")
+        check(Transcribe.dtwPreset("/m/custom-model.bin") == nil, "an unknown model reads without DTW")
+
+        // The WAV the region pass writes must read back through Track.
+        let wavBack = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("selftest-back.wav")
+        try? Transcribe.wavData([0, 1000, -1000, 32767], rate: 16_000).write(to: wavBack)
+        check(Transcribe.Track(wavBack)?.samples == [0, 1000, -1000, 32767], "a written WAV must read back")
+        try? FileManager.default.removeItem(at: wavBack)
+
+        check(Transcribe.srt([Transcribe.Line(start: 61.25, end: 62.5, speaker: "Me", text: "Hi.")])
+               == "1\n00:01:01,250 --> 00:01:02,500\nHi.\n", "SRT times must keep the milliseconds")
+
         // A track it cannot read must lose nothing.
         let missing = URL(fileURLWithPath: "/tmp/not-a-wav-\(UUID().uuidString).wav")
         check(Transcribe.gate([Transcribe.Line(start: 0, end: 1, speaker: "Me", text: "Keep.")],
