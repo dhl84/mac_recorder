@@ -31,8 +31,8 @@ enum Transcribe {
         /// under 200, and most under 5.
         static let floor: Double = 150
 
-        private let samples: [Int16]
-        private let rate: Double
+        let samples: [Int16]
+        let rate: Double
 
         /// Reads a 16-bit mono PCM WAV. Returns nil for any other shape, and the
         /// caller then keeps every segment rather than guess.
@@ -96,6 +96,207 @@ enum Transcribe {
         }
     }
 
+    // MARK: speech regions
+
+    /// whisper invents text over silence and over room noise. A loudness test cannot
+    /// tell a voice from a keyboard: on a call of 29 September 2026 David listened and
+    /// said nothing, and the mic track still gave 27 invented lines such as "Thank you."
+    /// The silero model can tell them apart. It found no speech on that track.
+    ///
+    /// whisper's own --vad uses the same model, but it maps its times back badly: one
+    /// segment spanned 171 seconds. So this pass cuts the speech out itself, joins it
+    /// with 1.5 seconds of silence between the pieces, runs whisper once, and places
+    /// each word back by its DTW time, which whisper gives to within a few hundredths
+    /// of a second. Measured on three calls: no invented lines, no repetition loop,
+    /// about half the time of the whole-track pass, and 1 to 3 per cent fewer words,
+    /// most of them invented filler.
+    static var vadBinary: String? {
+        for path in ["/opt/homebrew/bin/whisper-vad-speech-segments",
+                     "/usr/local/bin/whisper-vad-speech-segments"]
+        where FileManager.default.isExecutableFile(atPath: path) { return path }
+        return nil
+    }
+
+    static var vadModel: String {
+        if let custom = ProcessInfo.processInfo.environment["INTERVIEW_VAD_MODEL"] {
+            return (custom as NSString).expandingTildeInPath
+        }
+        return FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".cache/whisper-vad/ggml-silero-v5.1.2.bin").path
+    }
+
+    /// The DTW preset that matches the whisper model, or nil when none does. A wrong
+    /// preset gives wrong times, so an unknown model reads without DTW.
+    static func dtwPreset(_ modelPath: String) -> String? {
+        let name = (modelPath as NSString).lastPathComponent
+            .replacingOccurrences(of: "ggml-", with: "")
+            .replacingOccurrences(of: ".bin", with: "")
+            .replacingOccurrences(of: "-", with: ".")
+        let known = ["tiny", "tiny.en", "base", "base.en", "small", "small.en", "medium",
+                     "medium.en", "large.v1", "large.v2", "large.v3", "large.v3.turbo"]
+        return known.contains(name) ? name : nil
+    }
+
+    struct Region: Equatable {
+        let start: Double
+        let end: Double
+    }
+
+    /// Reads the speech segments that whisper-vad-speech-segments prints, in hundredths
+    /// of a second. Pads each one, and joins two that sit closer than `join` seconds.
+    static func regions(_ output: String, pad: Double = 0.2, join: Double = 0.6) -> [Region] {
+        var out: [Region] = []
+        let pattern = try! NSRegularExpression(pattern: #"start = ([\d.]+), end = ([\d.]+)"#)
+        let text = output as NSString
+        for match in pattern.matches(in: output, range: NSRange(location: 0, length: text.length)) {
+            guard let a = Double(text.substring(with: match.range(at: 1))),
+                  let b = Double(text.substring(with: match.range(at: 2))) else { continue }
+            let start = max(0, a / 100 - pad), end = b / 100 + pad
+            if let last = out.last, start - last.end <= join {
+                out[out.count - 1] = Region(start: last.start, end: max(end, last.end))
+            } else {
+                out.append(Region(start: start, end: end))
+            }
+        }
+        return out
+    }
+
+    /// One piece of the joined file: where it sits in the joined file, and where it
+    /// starts in the track.
+    struct Span {
+        let joinedStart: Double
+        let joinedEnd: Double
+        let trackStart: Double
+    }
+
+    /// Places each word by its time in the joined file, and groups the words into lines.
+    /// A word that lands in a gap goes to the nearest piece. A line ends at a pause of
+    /// more than a second, or after a full stop once it holds eight words.
+    /// A DTW time marks where a word starts. A line ends this long after its last word.
+    static let wordLength = 0.3
+
+    static func place(_ words: [(at: Double, text: String)], spans: [Span],
+                      speaker: String) -> [Line] {
+        guard !spans.isEmpty else { return [] }
+        var out: [Line] = []
+        var start = 0.0, end = 0.0, text = ""
+        for word in words {
+            let span = spans.first { word.at >= $0.joinedStart && word.at <= $0.joinedEnd }
+                ?? spans.min { a, b in
+                    min(abs(word.at - a.joinedStart), abs(word.at - a.joinedEnd))
+                        < min(abs(word.at - b.joinedStart), abs(word.at - b.joinedEnd)) }!
+            let at = span.trackStart
+                + min(max(0, word.at - span.joinedStart), span.joinedEnd - span.joinedStart)
+            let full = text.hasSuffix(".") || text.hasSuffix("?") || text.hasSuffix("!")
+            if text.isEmpty || at - end > 1.0 || (full && text.split(separator: " ").count >= 8) {
+                if !text.isEmpty { out.append(Line(start: start, end: end + wordLength, speaker: speaker, text: text)) }
+                start = at
+                text = word.text
+            } else {
+                text += " " + word.text
+            }
+            end = at
+        }
+        if !text.isEmpty { out.append(Line(start: start, end: end + wordLength, speaker: speaker, text: text)) }
+        return out
+    }
+
+    /// The words of whisper's full JSON, each with its DTW time when whisper gave one.
+    static func words(json data: Data) -> [(at: Double, text: String)] {
+        guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let segments = root["transcription"] as? [[String: Any]] else { return [] }
+        var out: [(at: Double, text: String)] = []
+        for segment in segments {
+            for token in segment["tokens"] as? [[String: Any]] ?? [] {
+                guard let text = token["text"] as? String, !text.isEmpty,
+                      !text.hasPrefix("[_"), !text.hasPrefix("<|") else { continue }
+                let dtw = (token["t_dtw"] as? NSNumber)?.doubleValue ?? -1
+                let from = ((token["offsets"] as? [String: Any])?["from"] as? NSNumber)?.doubleValue ?? 0
+                let at = dtw >= 0 ? dtw / 100 : from / 1000
+                if text.hasPrefix(" ") || out.isEmpty {
+                    out.append((at, text.trimmingCharacters(in: .whitespaces)))
+                } else {
+                    out[out.count - 1].text += text
+                }
+            }
+        }
+        return out.filter { !$0.text.isEmpty }
+    }
+
+    /// The region pass. Throws when a tool or a model is missing, and the caller then
+    /// reads the whole track instead.
+    static func bySpeech(_ wav: URL, speaker: String,
+                         progress: (String) -> Void) throws -> [Line] {
+        guard let vad = vadBinary, FileManager.default.fileExists(atPath: vadModel),
+              let track = Track(wav) else { throw fail("no speech finder") }
+        let found = shell(vad, ["-f", wav.path, "-vm", vadModel, "-vspd", "120", "-vt", "0.4"])
+        guard found.code == 0 else { throw fail("the speech finder failed") }
+        let pieces = regions(found.out)
+        guard !pieces.isEmpty else {
+            progress("No speech on \(wav.lastPathComponent).")
+            return []
+        }
+        let gap = [Int16](repeating: 0, count: Int(track.rate * 1.5))
+        var joined: [Int16] = []
+        var spans: [Span] = []
+        for piece in pieces {
+            let from = min(Int(piece.start * track.rate), track.samples.count)
+            let to = min(Int(piece.end * track.rate), track.samples.count)
+            guard to > from else { continue }
+            let at = Double(joined.count) / track.rate
+            joined += track.samples[from..<to]
+            spans.append(Span(joinedStart: at, joinedEnd: Double(joined.count) / track.rate,
+                              trackStart: piece.start))
+            joined += gap
+        }
+        let folder = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ir-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let file = folder.appendingPathComponent("speech.wav")
+        try wavData(joined, rate: Int(track.rate)).write(to: file)
+        let stem = folder.appendingPathComponent("speech")
+        var args = ["-m", model, "-f", file.path, "-l", "auto", "-ojf", "-of", stem.path,
+                    "-np", "-mc", "0"]
+        if let preset = dtwPreset(model) { args += ["-dtw", preset] }
+        let result = shell(binary, args)
+        guard result.code == 0,
+              let data = try? Data(contentsOf: stem.appendingPathExtension("json")) else {
+            throw fail("whisper-cli failed on the speech of \(wav.lastPathComponent)")
+        }
+        let total = pieces.reduce(0) { $0 + $1.end - $1.start }
+        progress("Read \(Int(total)) seconds of speech in \(spans.count) pieces.")
+        return place(words(json: data), spans: spans, speaker: speaker)
+    }
+
+    /// A 16-bit mono PCM WAV.
+    static func wavData(_ samples: [Int16], rate: Int) -> Data {
+        var data = Data("RIFF".utf8)
+        func put<T: FixedWidthInteger>(_ value: T) {
+            withUnsafeBytes(of: value.littleEndian) { data.append(contentsOf: $0) }
+        }
+        put(UInt32(36 + samples.count * 2))
+        data.append(contentsOf: Array("WAVEfmt ".utf8))
+        put(UInt32(16)); put(UInt16(1)); put(UInt16(1))
+        put(UInt32(rate)); put(UInt32(rate * 2)); put(UInt16(2)); put(UInt16(16))
+        data.append(contentsOf: Array("data".utf8))
+        put(UInt32(samples.count * 2))
+        samples.withUnsafeBytes { data.append(contentsOf: $0) }  // little endian on Apple silicon
+        return data
+    }
+
+    /// The lines as SRT, so mic.srt and system.srt hold the times of the track.
+    static func srt(_ lines: [Line]) -> String {
+        func clock(_ t: Double) -> String {
+            let ms = Int((t * 1000).rounded())
+            return String(format: "%02d:%02d:%02d,%03d", ms / 3_600_000, ms / 60_000 % 60,
+                          ms / 1000 % 60, ms % 1000)
+        }
+        return lines.enumerated().map { i, line in
+            "\(i + 1)\n\(clock(line.start)) --> \(clock(line.end))\n\(line.text)\n"
+        }.joined(separator: "\n")
+    }
+
     static var binary: String {
         for path in ["/opt/homebrew/bin/whisper-cli", "/usr/local/bin/whisper-cli"]
         where FileManager.default.isExecutableFile(atPath: path) { return path }
@@ -121,6 +322,14 @@ enum Transcribe {
             guard FileManager.default.fileExists(atPath: wav.path) else { continue }
             progress("Transcribing \(file) as \(speaker)…")
             let stem = session.url.appendingPathComponent(speaker == "Me" ? "mic" : "system")
+            if let found = try? bySpeech(wav, speaker: speaker, progress: progress) {
+                try? srt(found).write(to: stem.appendingPathExtension("srt"), atomically: true, encoding: .utf8)
+                // silero found the speech already, so these lines skip the loudness test
+                // and keep the repeat test. A one-word reply is short, not invented.
+                lines += gate(found, wav: wav, loudness: false, progress: progress)
+                continue
+            }
+            progress("Speech regions not available for \(file). Reading the whole track.")
             // -mc 0 keeps no decoded text as the prompt for the next window. Carried
             // text is what holds whisper in a repetition loop: on 29 September 2026 the
             // system track gave "So, the third billion dollar company was in 1901."
@@ -168,10 +377,12 @@ enum Transcribe {
     /// A short line is exempt, because "Yeah." and "Okay." repeat in every real call.
     ///
     /// A track it cannot read keeps every segment, so a surprise never loses speech.
-    static func gate(_ lines: [Line], wav: URL,
+    static func gate(_ lines: [Line], wav: URL, loudness: Bool = true,
                      progress: (String) -> Void = { _ in }) -> [Line] {
         var kept = lines
-        if let track = Track(wav) {
+        if !loudness {
+            // The caller checked the speech another way.
+        } else if let track = Track(wav) {
             kept = kept.filter { track.peak(from: $0.start, to: $0.end) >= Track.floor }
             if kept.count < lines.count {
                 progress("Dropped \(lines.count - kept.count) invented segments over the quiet parts.")
