@@ -122,6 +122,84 @@ Ollama must run, with the model `gemma4:26b-a4b-it-qat`. Start it with
 `ollama serve`. An 8 minute call takes about 15 seconds for the title and the
 brief together.
 
+### The live coach
+
+The live coach shows short notes in a small floating panel while you record. The
+notes come from the interview prep for the role. Each note has one of these kinds:
+
+- WRAP: end a long answer, with the line to end on.
+- MISSING: a prep point or number that you did not say yet.
+- ANSWER: the key points for a question that the prep answers.
+- FIX: a correction to a statement that conflicts with the prep.
+- ASK: a question from the prep to ask the interviewer.
+
+The panel stays on top of the call window and does not take the keyboard focus.
+A screen share and a screenshot do not show it. Drag it to the place you want, and
+the app keeps that place. Clear "Live coach" next to the name field to record
+without it.
+
+Tell the app where your folder of applications is. Do this once:
+
+```bash
+defaults write com.davidlee.InterviewRecorder coachApplications ~/path/to/applications
+```
+
+The command line uses `COACH_APPLICATIONS` instead. Without either one, the coach
+looks in `~/applications`.
+
+`coach.py` does the work, in these steps:
+
+1. It finds the application folder in your folder of applications. Each application
+   has its own folder. The words of the call name select the folder, so name the
+   call after the company, such as "Acme". If no folder name matches, it uses the
+   folder whose tracker line books an interview today.
+2. It reads the newest `interview-prep*.md`, the advert and the tracker record.
+   The first line of the panel names the files that it uses.
+3. Every 10 seconds it cuts the new audio of each track at a quiet point and runs
+   whisper-cli with the silero model. The lines go to `live.md`.
+4. Every 20 seconds it sends the prep and the transcript so far to the model. The
+   model returns one note or none. The notes go to `coach.jsonl`.
+
+A note comes 20 to 40 seconds after the speech that caused it. The coach stops
+when the recording stops, and when the app quits.
+
+The coach quotes the prep. If the prep is wrong, the note is wrong too, so correct
+the prep before the call.
+
+| Engine | Setting | Time for one note |
+| --- | --- | --- |
+| Claude Fable 5.1, through the `claude` CLI and your Claude login (the default) | `COACH_ENGINE=claude`, `COACH_MODEL` | 5 to 10 seconds |
+| Gemma 4 on this Mac | `COACH_ENGINE=ollama` | 33 seconds |
+| Gemma 4 on a second machine with a GPU, through an SSH tunnel | `COACH_ENGINE=ollama OLLAMA_HOST=http://localhost:11435` | 15 seconds (34 seconds for the first call) |
+
+If Fable is busy, the call uses Opus 5.5 (`COACH_FALLBACK`). If the account has
+used all of its Fable limit, the coach uses Opus 5.5 for the rest of the call. A
+note from Opus takes about 17 seconds. The `claude` engine
+sends the transcript text and the prep to Anthropic. It sends no audio. Use an
+`ollama` engine to keep all of the call on your own machines.
+
+Open the tunnel to that machine before you start the app. Replace `gpu-box` with
+its SSH host name:
+
+```bash
+ssh -f -N -L 11435:127.0.0.1:11434 gpu-box
+```
+
+The app reads no shell variables when Finder starts it. To use a local engine,
+start the app from Terminal:
+
+```bash
+COACH_ENGINE=ollama open "build/Interview Recorder.app"
+```
+
+To rehearse, replay a finished recording through the coach in real time. The
+second command starts the replay 8 minutes into the call:
+
+```bash
+open -n "build/Interview Recorder.app" --args --coach-replay ~/Documents/InterviewRecorder/<folder>
+python3 Resources/coach.py run ~/Documents/InterviewRecorder/<folder> --speed 1 --start 480
+```
+
 ## Where the files go
 
 | Item | Path | Environment variable |
@@ -135,10 +213,11 @@ brief together.
 
 Each recording folder holds `mic.wav`, `system.wav`, `meta.json` and, after the
 transcription, `mic.srt`, `system.srt` and `transcript.md`. Summarise adds
-`brief.md`.
+`brief.md`. The live coach adds `live.md`, `coach.jsonl` and `coach.log`.
 
-The brief goes to Ollama on this machine. No transcript and no audio reaches an
-external service.
+The brief goes to Ollama on this machine. No audio reaches an external service.
+The live coach sends the transcript text and the prep to Anthropic, unless you
+pick an `ollama` engine (see "The live coach").
 
 Press Change next to "Dataset" to pick the folder. Finder starts the app with no
 shell variables, so the window keeps the choice instead. `INTERVIEW_DATASET`
@@ -220,6 +299,11 @@ python3 "$BRIEF" title  <folder>                # name an unnamed call
 python3 "$BRIEF" brief  <folder>                # write brief.md
 python3 "$BRIEF" split  <folder>                # report the joins, change nothing
 python3 "$BRIEF" split  <folder> --apply --gap 12
+
+COACH="build/Interview Recorder.app/Contents/Resources/coach.py"
+
+python3 "$COACH" selftest                       # the WAV reader, the cut and the prep lookup
+python3 "$COACH" run <folder> --speed 3         # replay a call through the coach
 ```
 
 `--transcribe` writes `transcript.md` for one folder without the window. Use it
