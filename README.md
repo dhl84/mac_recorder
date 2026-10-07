@@ -236,7 +236,7 @@ repository is not the place for it.
 
 whisper invents text where nobody speaks. It fills silence and room noise with stock
 lines, such as "Thank you." It can also loop: one
-track of 29 September 2026 gave "So, the third billion dollar company was in 1901." 72
+track gave "So, the third billion dollar company was in 1901." 72
 times.
 
 The app tried three ways to stop this:
@@ -246,7 +246,7 @@ The app tried three ways to stop this:
    seconds, and the speakers came out in the wrong order.
 2. No VAD, with `-mc 0` and a loudness gate, from 29 September to 4 October 2026.
    The times were true, but a gate cannot tell a voice from a keyboard. On a call
-   where David only listened, the mic track gave 27 invented lines.
+   where the recorder only listened, the mic track gave 27 invented lines.
 3. The speech regions, from 4 October 2026. `whisper-vad-speech-segments` runs the
    silero model and lists where somebody speaks. The app cuts those pieces out, joins
    them with 1.5 seconds of silence between them, and runs whisper once. whisper
