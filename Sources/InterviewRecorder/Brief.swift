@@ -27,7 +27,7 @@ enum Brief {
             .appendingPathComponent("../../Resources/callbrief.py").standardized.path
     }
 
-    private static var python: String {
+    static var python: String {
         for path in ["/opt/homebrew/bin/python3", "/usr/bin/python3"]
         where FileManager.default.isExecutableFile(atPath: path) { return path }
         return "/usr/bin/python3"

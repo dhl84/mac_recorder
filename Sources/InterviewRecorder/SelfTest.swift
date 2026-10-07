@@ -1,6 +1,7 @@
 import AVFoundation
 import AppKit
 import ScreenCaptureKit
+import SwiftUI
 
 /// One runnable check for the parts that can break quietly: the SRT parser, the
 /// turn merge and the folder names. Run it with:
@@ -269,8 +270,20 @@ enum SelfTest {
 /// recording permission, so start it with `open -n` to make the app responsible:
 ///     open -n "Interview Recorder.app" --args --snapshot /abs/out.png [--recording]
 enum Snapshot {
-    static func takeIfAsked(_ recorder: Recorder) {
+    @MainActor static func takeIfAsked(_ recorder: Recorder) {
         let args = CommandLine.arguments
+        // The panel hides from screen capture, so draw its view to a file instead.
+        if let flag = args.firstIndex(of: "--coach-snapshot"), flag + 1 < args.count {
+            let coach = Coach()
+            coach.preview()
+            let renderer = ImageRenderer(content: CoachView(coach: coach).frame(width: 380, height: 260))
+            renderer.scale = 2
+            if let image = renderer.cgImage {
+                try? NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:])?
+                    .write(to: URL(fileURLWithPath: args[flag + 1]))
+            }
+            exit(0)
+        }
         guard let flag = args.firstIndex(of: "--snapshot"), flag + 1 < args.count else { return }
         if args.contains("--recording") { recorder.preview() }
         Task {

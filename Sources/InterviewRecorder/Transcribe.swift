@@ -16,7 +16,7 @@ enum Transcribe {
     /// --vad for this, and it does remove the invented text, but it also moves the
     /// timestamps: it cuts the silence out, transcribes the join, then maps the
     /// times back, and a segment then stretches across the gap between two turns.
-    /// On the call of 29 September 2026 one segment covered 171 seconds and held a
+    /// On one call one segment covered 171 seconds and held a
     /// few words. The merge below sorts by time, so the two speakers came out in
     /// the wrong order and one sentence broke in half across a reply.
     ///
@@ -99,7 +99,7 @@ enum Transcribe {
     // MARK: speech regions
 
     /// whisper invents text over silence and over room noise. A loudness test cannot
-    /// tell a voice from a keyboard: on a call of 29 September 2026 David listened and
+    /// tell a voice from a keyboard: on one call the recorder only listened and
     /// said nothing, and the mic track still gave 27 invented lines such as "Thank you."
     /// The silero model can tell them apart. It found no speech on that track.
     ///
@@ -331,7 +331,7 @@ enum Transcribe {
             }
             progress("Speech regions not available for \(file). Reading the whole track.")
             // -mc 0 keeps no decoded text as the prompt for the next window. Carried
-            // text is what holds whisper in a repetition loop: on 29 September 2026 the
+            // text is what holds whisper in a repetition loop: on one call the
             // system track gave "So, the third billion dollar company was in 1901."
             // 72 times across two minutes. With -mc 0 the worst loop fell to 15.
             let args = ["-m", model, "-f", wav.path, "-l", "auto",

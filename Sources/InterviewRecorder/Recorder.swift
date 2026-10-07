@@ -111,6 +111,7 @@ final class Recorder: NSObject, ObservableObject, SCStreamOutput, SCStreamDelega
     private var started = Date()
     private var folder: URL?
     private var label = ""
+    let coach = Coach()
     private let queue = DispatchQueue(label: "recorder.audio")
     private var deviceObserver: NSObjectProtocol?
 
@@ -145,6 +146,10 @@ final class Recorder: NSObject, ObservableObject, SCStreamOutput, SCStreamDelega
             elapsed = 0
             running = true
             say("Recording. The microphone and the system output both write to \(dir.lastPathComponent).")
+            if Coach.enabled {
+                let name = label
+                DispatchQueue.main.async { self.coach.start(folder: dir, label: name) }
+            }
             // start() runs off the main thread, where a scheduled timer never fires.
             // The main run loop in common mode also ticks while a menu is open.
             let clock = Timer(timeInterval: 0.5, repeats: true) { [weak self] _ in self?.tick() }
@@ -236,6 +241,7 @@ final class Recorder: NSObject, ObservableObject, SCStreamOutput, SCStreamDelega
 
     @discardableResult
     func stop() async -> URL? {
+        DispatchQueue.main.async { self.coach.stop() }
         timer?.invalidate()
         timer = nil
         if let deviceObserver { NotificationCenter.default.removeObserver(deviceObserver) }

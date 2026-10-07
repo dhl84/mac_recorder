@@ -26,8 +26,8 @@ GENERIC = {"", "interview", "untitled", "recording"}
 
 def me_name():
     """Who "Me" is. The transcript labels the microphone track "Me" and gives no
-    name, so the model binds any name that falls near the recorder to them. On
-    28 September 2026 whisper heard "walk through" as "james" and the brief
+    name, so the model binds any name that falls near the recorder to them. Once
+    whisper heard "walk through" as "james" and the brief
     renamed the recorder James throughout. The name comes from the machine now,
     never from the transcript."""
     name = os.environ.get("INTERVIEW_ME", "").strip()
@@ -45,7 +45,7 @@ def me_name():
 
 ME = me_name()
 
-# Who asked the questions. On 28 September 2026 the brief of a talent screen said that
+# Who asked the questions. Once the brief of a talent screen said that
 # the recorder interviewed the interviewer, because the prompt said only who made the
 # recording. The role now comes from meta.json, INTERVIEW_ME_ROLE or the questions.
 ROLES = {"candidate", "interviewer"}
@@ -234,7 +234,7 @@ def failure(line, transcript, duration):
     A bullet with a quote passes when the quote is in the transcript, so a correct
     paraphrase around it survives. A bullet without a quote must share half its
     words with the transcript. The paraphrase "the interviewer will contact the candidate" for "we'll be
-    in touch" shares too few words, and on 28 September 2026 that emptied the Actions."""
+    in touch" shares too few words, and once that emptied the Actions."""
     body = line.strip()
     if body.startswith("- "):
         body = body[2:]
@@ -273,10 +273,9 @@ def failure(line, transcript, duration):
 def reanchor(brief, transcript):
     """Moves each timestamp to the block that actually holds the words.
 
-    The model writes a plausible timestamp, not a true one. On 29 September 2026 it
-    put "Sonnet 5.5 is eight times cheaper than Opus" at 00:24:41, where the other
-    speaker says only "Yeah." The timestamp is how David finds the moment in the
-    audio, so a near miss wastes his time. This picks the block that shares the most
+    The model writes a plausible timestamp, not a true one. Once it put a quoted
+    line at 00:24:41, where the other speaker says only "Yeah." The timestamp is
+    how the reader finds the moment in the audio, so a near miss wastes their time. This picks the block that shares the most
     words with the line, and leaves the timestamp alone when no block is a clear
     match, because a wrong guess is worse than the model's own guess.
     """
@@ -632,55 +631,55 @@ The call settled an issue with a project.
     # to the recorder and the brief renamed them throughout.
     import tempfile
     global ME
-    keep, ME = ME, "David Lee"
+    keep, ME = ME, "Alex Morgan"
     try:
         with tempfile.TemporaryDirectory() as d:
             folder = Path(d)
             (folder / "transcript.md").write_text(
                 "# Interview\n\nRecorded.\n\n## 00:00:01 Them\n\n"
-                "morning david also walk through your cv james\n\n"
-                "## 00:00:05 Me\n\nMorning Daniel.\n", encoding="utf-8")
+                "morning alex also walk through your cv james\n\n"
+                "## 00:00:05 Me\n\nMorning Sam.\n", encoding="utf-8")
             body = speech(folder)
-        assert "00:00:05 David Lee" in body, body
+        assert "00:00:05 Alex Morgan" in body, body
         assert "00:00:05 Me" not in body, body
         assert "00:00:01 Them" in body, body
         assert "james" in body, "the speech text must survive untouched"
-        assert "David Lee" in TITLE.format(me=ME, transcript="x")
-        assert "David Lee" in BRIEF.format(style="s", me=ME, role="r", title="t", transcript="x")
+        assert "Alex Morgan" in TITLE.format(me=ME, transcript="x")
+        assert "Alex Morgan" in BRIEF.format(style="s", me=ME, role="r", title="t", transcript="x")
 
-        # The talent screen of 28 September 2026: the far end asked the questions, so
+        # A talent screen: the far end asked the questions, so
         # the recorder is the candidate, and the brief must not say they interviewed.
         screen = ("## 00:00:01 Them\n\nCan you walk me through your CV? What did you build at your last company?\n\n"
-                  "## 00:01:10 David Lee\n\nI was the second finance hire.\n\n"
+                  "## 00:01:10 Alex Morgan\n\nI led the data team.\n\n"
                   "## 00:05:00 Them\n\nHow did you forecast headcount? Any questions for me?\n\n"
                   "## 00:37:40 Them\n\nI have another meeting now, but we'll be in touch.\n")
         assert questions(screen) == (0, 4), questions(screen)
         with tempfile.TemporaryDirectory() as d:
-            folder = Path(d) / "20260928-0855-interview"
+            folder = Path(d) / "20260101-0900-interview"
             folder.mkdir()
             assert me_role(folder, screen) == "candidate"
             assert me_role(folder, screen.replace("?", ".")) == ""
             write_meta(folder, {"label": "", "me_role": "interviewer"})
             assert me_role(folder, screen) == "interviewer", "meta.json decides"
-            other = Path(d) / "20260928-1000-board"
+            other = Path(d) / "20260101-1000-board"
             other.mkdir()
             assert me_role(other, screen) == "", "a call that is not an interview has no role"
         assert "candidate" in ROLE_LINES["candidate"].format(me=ME)
-        wrong = "## The point\n\nDavid Lee interviewed Sam Jones for the finance role.\n"
-        assert wrong_direction(wrong, "candidate").startswith("David Lee interviewed")
-        for right in ("Sam Jones interviewed David Lee for the finance role.",
-                      "David interviewed with Sam Jones for the finance role."):
+        wrong = "## The point\n\nAlex Morgan interviewed Sam Jones for the finance role.\n"
+        assert wrong_direction(wrong, "candidate").startswith("Alex Morgan interviewed")
+        for right in ("Sam Jones interviewed Alex Morgan for the finance role.",
+                      "Alex interviewed with Sam Jones for the finance role."):
             assert not wrong_direction(f"## The point\n\n{right}\n", "candidate"), right
         assert not wrong_direction(wrong, ""), "no role, no check"
 
         # A paraphrased action survives when its quote is in the transcript.
-        action = '- [Them] Contact David about the next step, date unstated ("we\'ll be in touch")'
+        action = '- [Them] Contact Alex about the next step, date unstated ("we\'ll be in touch")'
         assert failure(action, screen, 2400) is None, failure(action, screen, 2400)
         question = '- [37:40] No date for the next round ("I have another meeting now, but we\'ll be in touch")'
         assert failure(question, screen, 2400) is None
         invented_quote = '- [Them] Send an offer by Friday ("we will send you an offer on Friday")'
         assert failure(invented_quote, screen, 2400).startswith("quote not in the transcript")
-        assert failure('- [Them] Contact David about the next step, date unstated', screen, 2400), \
+        assert failure('- [Them] Contact Alex about the next step, date unstated', screen, 2400), \
             "without a quote the old word test still applies"
         assert failure('- [00:05] Them asked about 12 hires ("How did you forecast headcount")',
                        screen, 2400).startswith("number 12"), "a number outside the quote still counts"

@@ -140,6 +140,7 @@ struct ContentView: View {
     @State private var label = ""
     @State private var datasetFolder = ""
     @State private var pane: Pane = .brief
+    @AppStorage("coach") private var coachOn = true
 
     var body: some View {
         // The banner sits above the split view, not in its safe area: the sidebar
@@ -157,6 +158,13 @@ struct ContentView: View {
         .onAppear {
             library.reload()
             if CommandLine.arguments.contains("--snapshot") { library.selected = library.shown.first }
+            // A rehearsal: the coach replays a finished recording in real time.
+            // The arguments after the folder go to coach.py, for example --start 480.
+            let args = CommandLine.arguments
+            if let flag = args.firstIndex(of: "--coach-replay"), flag + 1 < args.count {
+                recorder.coach.start(folder: URL(fileURLWithPath: args[flag + 1]), label: "",
+                                     extra: ["--speed", "1"] + args[(flag + 2)...])
+            }
         }
         // Stop playback before a recording starts, so it does not play into the call.
         .onChange(of: recorder.running) { _, running in if running { player.pause() } }
@@ -176,9 +184,14 @@ struct ContentView: View {
     private var recordBar: some ToolbarContent {
         ToolbarItem(placement: .principal) {
             if !recorder.running {
-                TextField("Company and role, or leave it empty", text: $label)
-                    .textFieldStyle(.roundedBorder)
-                    .frame(width: 260)
+                HStack {
+                    TextField("Company and role, or leave it empty", text: $label)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 260)
+                    Toggle("Live coach", isOn: $coachOn)
+                        .toggleStyle(.checkbox)
+                        .help("Shows short notes from the interview prep while you talk")
+                }
             }
         }
         ToolbarItem(placement: .primaryAction) {

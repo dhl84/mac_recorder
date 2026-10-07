@@ -99,7 +99,7 @@ lane :group do |o|
     next
   end
   c.post("v1/betaTesters", { data: { type: "betaTesters",
-    attributes: { email: email, firstName: o[:first] || "David", lastName: o[:last] || "Lee" },
+    attributes: { email: email, firstName: o[:first] || "Test", lastName: o[:last] || "User" },
     relationships: { betaGroups: { data: [{ type: "betaGroups", id: gid }] } } } })
   UI.success("INVITED #{email}")
 end
