@@ -13,6 +13,7 @@ cp .build/release/InterviewRecorder "$APP/Contents/MacOS/InterviewRecorder"
 cp Resources/Info.plist "$APP/Contents/Info.plist"
 cp Resources/callbrief.py "$APP/Contents/Resources/callbrief.py"
 cp Resources/coach.py "$APP/Contents/Resources/coach.py"
+cp Resources/practice.py "$APP/Contents/Resources/practice.py"
 cp Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 
 # The silero model finds the speech in each track. Without it the app reads the whole
