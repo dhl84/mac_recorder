@@ -269,6 +269,7 @@ enum SelfTest {
 /// Saves a PNG of the app's own window and quits. It uses the app's own screen
 /// recording permission, so start it with `open -n` to make the app responsible:
 ///     open -n "Interview Recorder.app" --args --snapshot /abs/out.png [--recording]
+/// `--practice-snapshot /abs/out.png` saves the Practice window with fake state.
 enum Snapshot {
     @MainActor static func takeIfAsked(_ recorder: Recorder) {
         let args = CommandLine.arguments
@@ -284,7 +285,8 @@ enum Snapshot {
             }
             exit(0)
         }
-        guard let flag = args.firstIndex(of: "--snapshot"), flag + 1 < args.count else { return }
+        let practice = args.firstIndex(of: "--practice-snapshot")
+        guard let flag = practice ?? args.firstIndex(of: "--snapshot"), flag + 1 < args.count else { return }
         if args.contains("--recording") { recorder.preview() }
         Task {
             try? await Task.sleep(nanoseconds: 2_000_000_000)
@@ -292,6 +294,7 @@ enum Snapshot {
                 let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
                 guard let window = content.windows.first(where: {
                     $0.owningApplication?.processID == getpid() && $0.frame.width > 300
+                        && (practice == nil || $0.title == "Practice")
                 }) else { exit(2) }
                 let config = SCStreamConfiguration()
                 config.width = Int(window.frame.width * 2)

@@ -200,12 +200,109 @@ open -n "build/Interview Recorder.app" --args --coach-replay ~/Documents/Intervi
 python3 Resources/coach.py run ~/Documents/InterviewRecorder/<folder> --speed 1 --start 480
 ```
 
+### Practice mode
+
+Practice mode asks you one interview question for the stage that you practise.
+It records your answer, transcribes it on this Mac and gives you an evaluation.
+
+1. Press Practice in the toolbar.
+2. Pick the stage and the engine.
+3. Press New question.
+4. Press Answer or the space bar, and give your answer aloud. Then press Stop.
+
+The evaluation gives a score, the parts that worked, the fixes and a stronger
+answer. The clock turns red when the answer goes past the target length. Press
+Evaluate again to mark the same answer with a different engine. Practice waits
+while a call records.
+
+#### The practice pack
+
+This repository holds the framework only. The questions and the marking come from
+a practice pack. A pack is a folder that you keep outside this repository, because
+your questions, rules and facts are private. The pack holds `pack.py` with three
+functions:
+
+| Function | Returns |
+| --- | --- |
+| `stages()` | The stages: `[{"id": ..., "name": ...}]` |
+| `question(stage, history)` | One question: `{"id": ..., "text": ..., "seconds": 120}` |
+| `evaluate(stage, question, answer, ask)` | The marks: `{"score": 7, "markdown": ...}` |
+
+`history` holds the earlier attempts. The pack can use it to ask again a
+question that got a low score. `answer` holds the text, the length in seconds
+and the number of words. `ask(system, user)` sends one prompt to the engine that
+you picked and returns the reply.
+
+To start, copy `practice-pack-template/` to a private folder. Press Change in the
+Practice window and pick that folder. The command line uses `PRACTICE_PACK`, or:
+
+```bash
+defaults write com.davidlee.InterviewRecorder practicePack ~/path/to/pack
+```
+
+#### Train the pack
+
+The pack trains the model through the prompt. It does not change the model.
+Make the pack yours:
+
+- Write the questions for the stages that you face. Questions from your own
+  research give better practice than general questions.
+- Write the marking rules: the structure, the length, and the mistakes that you
+  make.
+- Give the marker your facts: your CV, your stories with their numbers, and the
+  claims that you must not make. The stronger answer then uses only your real
+  evidence.
+- Read your evaluations. Add a rule for each mistake that comes back.
+
+#### The engines
+
+| Engine | In the window | Setting | Time for one evaluation |
+| --- | --- | --- | --- |
+| Claude, through the `claude` CLI and your Claude subscription (the default) | Claude | `PRACTICE_ENGINE=claude` | 25 seconds with Fable 5.1 |
+| GPT, through the `codex` CLI and your ChatGPT subscription | Codex | `PRACTICE_ENGINE=codex` | 45 seconds |
+| A local model through Ollama | Local | `PRACTICE_ENGINE=ollama` | 20 to 65 seconds |
+
+If the account used all of its Fable limit, the evaluation uses Opus 5.5
+(`PRACTICE_FALLBACK`). The Codex engine uses the model in your Codex settings. It
+runs in an empty folder with a read-only sandbox. `PRACTICE_MODEL` sets the model
+of any engine on the command line. The local default is `gemma4:26b-a4b-it-qat`.
+To use a different local model from the window:
+
+```bash
+defaults write com.davidlee.InterviewRecorder practiceLocalModel <ollama model name>
+```
+
+The Claude and Codex engines send the question, the transcript of your answer
+and the prompt of your pack to Anthropic or to OpenAI. No audio leaves the Mac.
+Use the Local engine to keep all of it on the Mac.
+
+The test of 10 October 2026 gave one recorded answer and one pack to each local
+model on an M4 Max with 48 GB:
+
+| Model | Time | Result |
+| --- | --- | --- |
+| `gemma4:26b-a4b-it-qat` | 25 s | Found the main faults. The stronger answer changed the subject of the role. |
+| `Ornith-1.5-35B-A3B` (Q4_K_M) | 21 s | The marks closest to Claude. The stronger answer invented two numbers. |
+| `qwen3-vl:30b` | 65 s | Said that nothing worked. Marked a speech recognition error as a wrong fact. |
+
+Claude and Codex gave the most accurate marks. Use a local model when the answer
+must stay on the Mac, and check each number in its stronger answer.
+
+#### The files of an attempt
+
+Each attempt has a folder in `~/Documents/InterviewPractice/` with
+`question.json`, `answer.wav`, `answer.md` (the transcript) and `evaluation.md`.
+`history.jsonl` in that folder holds one line for each evaluation. A question
+that you skip leaves no folder.
+
 ## Where the files go
 
 | Item | Path | Environment variable |
 | --- | --- | --- |
 | Recordings | `~/Documents/InterviewRecorder/<date>-<name>/` | `INTERVIEW_RECORDER_HOME` |
 | Dataset | `~/Documents/InterviewDataset/` | `INTERVIEW_DATASET` |
+| Practice attempts | `~/Documents/InterviewPractice/` | `PRACTICE_HOME` |
+| Practice pack | `~/practice-pack/`, or the folder picked in the Practice window | `PRACTICE_PACK` |
 | App icon | `Resources/AppIcon.icns`, drawn by `make_icon.sh` | |
 | Whisper model | `ggml-large-v3-turbo.bin` from OpenSuperWhisper | `INTERVIEW_WHISPER_MODEL` |
 | Voice activity model | `~/.cache/whisper-vad/ggml-silero-v5.1.2.bin` | `INTERVIEW_VAD_MODEL` |

@@ -141,6 +141,7 @@ struct ContentView: View {
     @State private var datasetFolder = ""
     @State private var pane: Pane = .brief
     @AppStorage("coach") private var coachOn = true
+    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         // The banner sits above the split view, not in its safe area: the sidebar
@@ -158,6 +159,7 @@ struct ContentView: View {
         .onAppear {
             library.reload()
             if CommandLine.arguments.contains("--snapshot") { library.selected = library.shown.first }
+            if CommandLine.arguments.contains("--practice-snapshot") { openWindow(id: "practice") }
             // A rehearsal: the coach replays a finished recording in real time.
             // The arguments after the folder go to coach.py, for example --start 480.
             let args = CommandLine.arguments
@@ -193,6 +195,10 @@ struct ContentView: View {
                         .help("Shows short notes from the interview prep while you talk")
                 }
             }
+        }
+        ToolbarItem(placement: .primaryAction) {
+            Button("Practice") { openWindow(id: "practice") }
+                .help("Answer a likely question for an interview stage and get an evaluation")
         }
         ToolbarItem(placement: .primaryAction) {
             Button(recorder.running ? "Stop recording" : "Start recording") {
@@ -435,6 +441,10 @@ struct InterviewRecorderApp: App {
                 .onAppear { Snapshot.takeIfAsked(recorder) }
         }
         .windowToolbarStyle(.unified)
+
+        Window("Practice", id: "practice") {
+            PracticeView(recorder: recorder)
+        }
 
         // The call app covers the window, so the menu bar shows the state as well.
         MenuBarExtra {
