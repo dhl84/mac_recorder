@@ -118,7 +118,13 @@ final class Coach: ObservableObject {
             p.isFloatingPanel = true
             p.becomesKeyOnlyIfNeeded = true
             p.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
-            p.contentView = NSHostingView(rootView: CoachView(coach: self))
+            // The notes must not size the panel. By default the hosting view sets a minimum
+            // height from the text at its narrowest. That once made the panel 2592 points
+            // tall, past the bottom of the screen, and the panel could not shrink.
+            let host = NSHostingView(rootView: CoachView(coach: self))
+            host.sizingOptions = []
+            p.contentView = host
+            p.minSize = NSSize(width: 240, height: 140)
             if !p.setFrameUsingName("CoachPanel"), let screen = NSScreen.main?.visibleFrame {
                 p.setFrameTopLeftPoint(NSPoint(x: screen.maxX - 400, y: screen.maxY - 20))
             }

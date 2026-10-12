@@ -15,11 +15,18 @@ final class Track {
     private let lock = NSLock()
     private var lastBuffer = Date.distantPast
     private var lastLevel: Float = 0
+    private var lastSound = Date.distantPast
 
-    /// When the last buffer arrived and how loud it was (0 to 1), for the live display.
-    var health: (last: Date, level: Float) {
+    /// A peak under -70 dBFS is a dead input, not a quiet room. A working microphone
+    /// stays above -48 dBFS in every 10 seconds of the recordings so far. A MacBook with
+    /// its lid closed gives -91 dBFS from its built-in microphone.
+    static let deadPeak: Float = 0.000_3
+
+    /// When the last buffer arrived, how loud it was (0 to 1), and when the input last
+    /// carried sound, for the live display.
+    var health: (last: Date, level: Float, sound: Date) {
         lock.lock(); defer { lock.unlock() }
-        return (lastBuffer, lastLevel)
+        return (lastBuffer, lastLevel, lastSound)
     }
 
     init(url: URL, started: Date = Date()) throws {
@@ -60,7 +67,10 @@ final class Track {
         let rms = sqrt(samples.reduce(0) { $0 + $1 * $1 } / Float(samples.count))
         // ponytail: a 60 dB window is enough to tell speech from silence.
         let level = max(0, min(1, (20 * log10(max(rms, 1e-6)) + 60) / 60))
-        lock.lock(); lastBuffer = Date(); lastLevel = level; lock.unlock()
+        let peak = samples.reduce(0) { max($0, abs($1)) }
+        lock.lock(); lastBuffer = Date(); lastLevel = level
+        if peak > Track.deadPeak { lastSound = lastBuffer }
+        lock.unlock()
         padToClock(before: out.frameLength)
         try? file.write(from: out)
         written += AVAudioFramePosition(out.frameLength)
@@ -145,7 +155,8 @@ final class Recorder: NSObject, ObservableObject, SCStreamOutput, SCStreamDelega
             started = Date()
             elapsed = 0
             running = true
-            say("Recording. The microphone and the system output both write to \(dir.lastPathComponent).")
+            let input = AVCaptureDevice.default(for: .audio)?.localizedName ?? "the default input"
+            say("Recording from \(input). The microphone and the system output both write to \(dir.lastPathComponent).")
             if Coach.enabled {
                 let name = label
                 DispatchQueue.main.async { self.coach.start(folder: dir, label: name) }
@@ -233,7 +244,12 @@ final class Recorder: NSObject, ObservableObject, SCStreamOutput, SCStreamDelega
     private func tick() {
         elapsed = Date().timeIntervalSince(started)
         let now = Date()
-        if let m = mic?.health { micLive = now.timeIntervalSince(m.last) < 3; micLevel = micLive ? m.level : 0 }
+        // A microphone that gives only digital silence for 10 seconds shows NO SIGNAL too.
+        // The system track stays exempt: it is silent whenever the other side is.
+        if let m = mic?.health {
+            micLive = now.timeIntervalSince(m.last) < 3 && now.timeIntervalSince(m.sound) < 10
+            micLevel = micLive ? m.level : 0
+        }
         if let s = sys?.health { sysLive = now.timeIntervalSince(s.last) < 3; sysLevel = sysLive ? s.level : 0 }
     }
 

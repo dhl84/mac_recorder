@@ -60,6 +60,12 @@ each second and discards every frame. It records no picture.
 4. Press Summarise for the brief.
 5. Type or pick an application folder and press Add to dataset.
 
+The banner at the top shows a meter for each track. The status line names the
+microphone when the recording starts. NO SIGNAL on the microphone means that the
+input gives only digital silence. For example, a MacBook with its lid closed turns
+off its built-in microphone. If you see NO SIGNAL, select a different input in
+System Settings, Sound. The recording continues on the new input.
+
 The list sorts by date, by name or by length, and the search field filters by
 name.
 

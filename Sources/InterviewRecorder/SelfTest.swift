@@ -232,6 +232,15 @@ enum SelfTest {
             }
             let seconds = Double(try AVAudioFile(forReading: wav).length) / 16_000
             check(abs(seconds - 3.0) < 0.2, "a late track must pad to the clock, got \(seconds) s")
+
+            // A dead input gives digital silence, and the banner must show NO SIGNAL.
+            let quiet = try Track(url: wav.appendingPathExtension("quiet.wav"))
+            quiet.write(tenth)
+            check(quiet.health.sound == .distantPast, "digital silence must not count as sound")
+            tenth.floatChannelData![0][100] = 0.01  // -40 dBFS, a quiet room
+            quiet.write(tenth)
+            check(quiet.health.sound > .distantPast, "a quiet room must count as sound")
+            try? FileManager.default.removeItem(at: quiet.url)
         } catch {
             check(false, "the padding check threw: \(error.localizedDescription)")
         }
