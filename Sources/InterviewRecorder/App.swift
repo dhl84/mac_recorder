@@ -155,7 +155,7 @@ struct ContentView: View {
             }
         }
         .toolbar { recordBar }
-        .frame(minWidth: 940, minHeight: 560)
+        .frame(minWidth: 1000, minHeight: 560)  // the narrowest width that shows every toolbar item
         .onAppear {
             library.reload()
             if CommandLine.arguments.contains("--snapshot") { library.selected = library.shown.first }
@@ -180,10 +180,28 @@ struct ContentView: View {
         }
     }
 
-    /// Two toolbar items, not one: macOS 26 draws one item as one glass capsule,
+    /// Separate toolbar items, not one: macOS 26 draws one item as one glass capsule,
     /// and a red button then colours the name field red as well.
+    /// The record button sits at the leading edge. A narrow window moves the trailing
+    /// items into the overflow menu first, and the record button must never go there.
     @ToolbarContentBuilder
     private var recordBar: some ToolbarContent {
+        ToolbarItem(placement: .navigation) {
+            Button(recorder.running ? "Stop recording" : "Start recording") {
+                Task {
+                    if recorder.running {
+                        await recorder.stop()
+                        label = ""
+                        library.reload()
+                    } else {
+                        await recorder.start(label: label)
+                    }
+                }
+            }
+            .keyboardShortcut("r")
+            .tint(recorder.running ? .red : .accentColor)
+            .buttonStyle(.borderedProminent)
+        }
         ToolbarItem(placement: .principal) {
             if !recorder.running {
                 HStack {
@@ -199,22 +217,6 @@ struct ContentView: View {
         ToolbarItem(placement: .primaryAction) {
             Button("Practice") { openWindow(id: "practice") }
                 .help("Answer a likely question for an interview stage and get an evaluation")
-        }
-        ToolbarItem(placement: .primaryAction) {
-            Button(recorder.running ? "Stop recording" : "Start recording") {
-                Task {
-                    if recorder.running {
-                        await recorder.stop()
-                        label = ""
-                        library.reload()
-                    } else {
-                        await recorder.start(label: label)
-                    }
-                }
-            }
-            .keyboardShortcut("r")
-            .tint(recorder.running ? .red : .accentColor)
-            .buttonStyle(.borderedProminent)
         }
     }
 
